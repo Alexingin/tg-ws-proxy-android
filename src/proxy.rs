@@ -287,9 +287,9 @@ impl WsPool {
 
         if connected > 0 {
             self.report_success(slot.dc, slot.is_media != 0).await;
-            self.schedule_rotation(slot, target_ip, domains).await;
         } else {
-            // Экспоненциальный backoff 1s..3600s как в оригинале.
+            // Экспоненциальный backoff 1s..60s (в оригинале до 3600s, но на
+            // мобильной сети неудачи почти всегда временные).
             let mut failures = self.refill_failures.lock().await;
             let count = failures.get(&slot).map(|(c, _)| *c).unwrap_or(0) + 1;
             let shift = (count - 1).min(12);
@@ -310,6 +310,8 @@ impl WsPool {
             if slot.is_media != 0 { "m" } else { "" },
             state.queue.lock().await.len()
         );
+        // Ротатор нужен и после неудачи: он повторит пополнение по окончании backoff.
+        self.schedule_rotation(slot, target_ip, domains).await;
     }
 
     pub async fn report_success(&self, dc: i32, is_media: bool) {
@@ -338,6 +340,12 @@ impl WsPool {
         spawn_rotate_task(pool, slot, target_ip, domains, cancel);
     }
 
+    // Порт актуального proxy/pool.py::_rotate. Отличия от старой версии форка:
+    //  * задача НЕ завершается, когда пул опустел (раньше после того, как все
+    //    соединения протухали разом, пул больше никто не пополнял);
+    //  * пополнение запускается после каждой ротации, если соединений меньше
+    //    pool_size (оригинал, коммит "refill pool after rotating expired connections");
+    //  * просыпаемся к моменту окончания backoff, чтобы сразу повторить пополнение.
     async fn rotate(
         self: Arc<Self>,
         slot: DcSlot,
@@ -346,44 +354,19 @@ impl WsPool {
         cancel: CancellationToken,
     ) {
         loop {
-            // Спим до ближайшего протухания, но не реже CHECK_INTERVAL.
-            let sleep_dur = {
+            if cancel.is_cancelled() || POOL_SIZE.load(Ordering::Relaxed) <= 0 {
+                break;
+            }
+            let state = {
                 let map = self.slots.lock().await;
                 match map.get(&slot) {
-                    Some(state) => {
-                        let q = state.queue.lock().await;
-                        if q.is_empty() {
-                            None
-                        } else {
-                            let now = now_monotonic();
-                            let min_expires = q
-                                .iter()
-                                .map(|e| e.created + WS_POOL_REUSE_MAX_AGE)
-                                .fold(f64::INFINITY, f64::min);
-                            Some((min_expires - now).clamp(0.0, WS_POOL_CHECK_INTERVAL))
-                        }
-                    }
-                    None => None,
-                }
-            };
-            let sleep_dur = match sleep_dur {
-                Some(d) => d,
-                None => break,
-            };
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs_f64(sleep_dur)) => {}
-            }
-
-            let now = now_monotonic();
-            let expired_count: usize;
-            let ready_count: usize;
-            {
-                let map = self.slots.lock().await;
-                let state = match map.get(&slot) {
                     Some(s) => s.clone(),
                     None => break,
-                };
+                }
+            };
+
+            let now = now_monotonic();
+            let (expired_count, ready_count, min_expires) = {
                 let mut q = state.queue.lock().await;
                 let mut ready = VecDeque::with_capacity(q.len());
                 let mut expired = Vec::new();
@@ -394,15 +377,19 @@ impl WsPool {
                         ready.push_back(e);
                     }
                 }
-                expired_count = expired.len();
+                let min_expires = ready
+                    .iter()
+                    .map(|e| e.created + WS_POOL_REUSE_MAX_AGE)
+                    .fold(f64::INFINITY, f64::min);
                 *q = ready;
-                ready_count = q.len();
+                let cnt = expired.len();
                 for ws in expired {
                     tokio::spawn(async move {
                         ws.close().await;
                     });
                 }
-            }
+                (cnt, q.len(), min_expires)
+            };
             if expired_count > 0 {
                 ldebug!(
                     "WS pool rotated DC{}{}: {} stale, {} ready",
@@ -412,16 +399,55 @@ impl WsPool {
                     ready_count
                 );
             }
+
             let pool_sz = POOL_SIZE.load(Ordering::Relaxed).max(0) as usize;
-            if ready_count == 0 {
-                break;
-            }
             if ready_count < pool_sz {
                 self.schedule_refill(slot, target_ip.clone(), domains.clone())
                     .await;
             }
+
+            // Когда проснуться: не реже CHECK_INTERVAL, к ближайшему протуханию
+            // и к концу backoff пополнения.
+            let mut wake_at = now + WS_POOL_CHECK_INTERVAL;
+            if min_expires.is_finite() {
+                wake_at = wake_at.min(min_expires);
+            }
+            if state.refilling.load(Ordering::SeqCst) == 0 {
+                if let Some((_, after)) = self.refill_failures.lock().await.get(&slot) {
+                    if *after > now {
+                        wake_at = wake_at.min(*after);
+                    }
+                }
+            }
+            let sleep_dur = (wake_at - now_monotonic()).max(0.05);
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs_f64(sleep_dur)) => {}
+            }
         }
         self.rotating.lock().await.remove(&slot);
+    }
+
+    /// Сброс после смены сети / пробуждения: закрывает все простаивающие
+    /// соединения (они могли остаться привязанными к старой сети), сбрасывает
+    /// backoff пополнения и сразу заново греет пул. Задачи ротации не трогаем.
+    pub async fn flush_and_rewarm(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
+        let mut closed = 0usize;
+        {
+            let map = self.slots.lock().await;
+            for s in map.values() {
+                let mut q = s.queue.lock().await;
+                for e in q.drain(..) {
+                    closed += 1;
+                    tokio::spawn(async move {
+                        e.ws.close().await;
+                    });
+                }
+            }
+        }
+        self.refill_failures.lock().await.clear();
+        linfo!("WS pool flushed ({} idle closed), rewarming", closed);
+        self.warmup(dc_opt_map).await;
     }
 
     pub async fn warmup(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
@@ -437,7 +463,13 @@ impl WsPool {
                     dc: *dc,
                     is_media: is_media_int(is_media),
                 };
-                self.schedule_refill(slot, target_ip.clone(), domains).await;
+                self.schedule_refill(slot, target_ip.clone(), domains.clone())
+                    .await;
+                // Ротатор живёт постоянно и сам дотягивает пул до pool_size
+                // (в т.ч. после неудачного первого пополнения).
+                if POOL_SIZE.load(Ordering::Relaxed) > 0 {
+                    self.schedule_rotation(slot, target_ip.clone(), domains).await;
+                }
             }
         }
         linfo!("WS pool warmup started for {} DC(s)", ndcs);
@@ -765,6 +797,30 @@ impl ProxyPools {
     pub async fn reset(&self) {
         self.ws.reset().await;
         self.cf_worker.reset().await;
+    }
+
+    /// Вызывается из Android при смене сети / выходе из сна.
+    /// Снимает все накопленные блокировки (они почти всегда — следствие
+    /// того, что сети просто не было), выкидывает простаивающие соединения
+    /// и заново греет пулы. Активные соединения Telegram не трогаем.
+    pub async fn on_network_change(&self, dc_opt_map: &HashMap<i32, String>) {
+        let (bl, dcf, ipf) = (
+            WS_BLACKLIST.read().len(),
+            DC_FAIL_UNTIL.read().len(),
+            IP_FAIL_UNTIL.read().len(),
+        );
+        WS_BLACKLIST.write().clear();
+        DC_FAIL_UNTIL.write().clear();
+        IP_FAIL_UNTIL.write().clear();
+        clear_cfproxy_429_cooldowns();
+        clear_doh_cache();
+        linfo!(
+            "Network changed: cleared blacklist={} dc_fail={} ip_fail={}",
+            bl, dcf, ipf
+        );
+        self.ws.flush_and_rewarm(dc_opt_map).await;
+        self.cf_worker.reset().await;
+        self.cf_worker.warmup(dc_opt_map).await;
     }
 }
 
@@ -1777,7 +1833,11 @@ async fn serve_core<R, W>(
     let dc_configured = target_opt.is_some();
     let target = target_opt.unwrap_or_default();
 
-    let blacklisted = WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false);
+    let blacklisted = WS_BLACKLIST
+        .read()
+        .get(&dc_key)
+        .map(|until| now < *until)
+        .unwrap_or(false);
     let ip_cooldown_active = if target.is_empty() {
         false
     } else {
@@ -1938,7 +1998,7 @@ async fn serve_core<R, W>(
         }
 
         if ws_failed_redirect && all_redirects {
-            WS_BLACKLIST.write().insert(dc_key, true);
+            WS_BLACKLIST.write().insert(dc_key, now_monotonic() + WS_BLACKLIST_TTL);
             lwarn!("[{}] DC{}{} blacklisted for WS (all 302)", label, dc, m_tag);
         } else if ws_failed_redirect {
             DC_FAIL_UNTIL.write().insert(dc_key, now + DC_FAIL_COOLDOWN);
@@ -2005,7 +2065,7 @@ async fn serve_core<R, W>(
         match retry_ws {
             None => {
                 if retry_failed_redirect && retry_all_redirects {
-                    WS_BLACKLIST.write().insert(dc_key, true);
+                    WS_BLACKLIST.write().insert(dc_key, now_monotonic() + WS_BLACKLIST_TTL);
                     lwarn!(" DC{}{} заблокирован (302)", dc, m_tag);
                 }
                 lwarn!(" direct fallback DC{}{}", dc, m_tag);
@@ -2185,6 +2245,12 @@ pub async fn run_proxy(
         }
     });
 
+    // Раньше ошибка accept() просто игнорировалась через `continue`: если
+    // слушающий сокет ломался, цикл крутился вхолостую, а Telegram больше не
+    // мог подключиться до ручного перезапуска. Теперь — пауза и, если ошибки
+    // идут подряд, пересоздание сокета (аналог listener watchdog в оригинале).
+    let mut listener = listener;
+    let mut accept_errors: u32 = 0;
     loop {
         tokio::select! {
             _ = cancel_root.cancelled() => {
@@ -2193,14 +2259,47 @@ pub async fn run_proxy(
             accept = listener.accept() => {
                 match accept {
                     Ok((conn, _)) => {
+                        accept_errors = 0;
                         let p = pools.clone();
                         let cancel = cancel_root.child_token();
                         tokio::spawn(async move {
                             handle_client(p, conn, cancel).await;
                         });
                     }
-                    Err(_) => {
-                        continue;
+                    Err(e) => {
+                        accept_errors += 1;
+                        if accept_errors == 1 || accept_errors % 20 == 0 {
+                            lwarn!("accept error #{}: {}", accept_errors, e);
+                        }
+                        tokio::select! {
+                            _ = cancel_root.cancelled() => break,
+                            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                        }
+                        if accept_errors >= 10 {
+                            let addr = format!("{}:{}", host, port);
+                            drop(listener);
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            loop {
+                                match TcpListener::bind(&addr).await {
+                                    Ok(l) => {
+                                        lwarn!("Listening socket restored on {}", addr);
+                                        listener = l;
+                                        accept_errors = 0;
+                                        break;
+                                    }
+                                    Err(be) => {
+                                        lwarn!("Re-bind {} failed: {}, retry in 2s", addr, be);
+                                        tokio::select! {
+                                            _ = cancel_root.cancelled() => {
+                                                pools.close_all().await;
+                                                return Ok(());
+                                            }
+                                            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

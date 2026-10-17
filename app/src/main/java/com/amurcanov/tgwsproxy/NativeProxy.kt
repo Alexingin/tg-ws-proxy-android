@@ -11,6 +11,7 @@ interface ProxyLibrary : Library {
 
     fun StartProxy(host: String, port: Int, dcIps: String, secret: String, verbose: Int): Int
     fun StopProxy(): Int
+    fun ResetNetworkState(): Int
     fun SetPoolSize(size: Int)
     fun SetBufferSizeKb(kb: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
@@ -32,6 +33,11 @@ object NativeProxy {
 
     fun stopProxy(): Int {
         return ProxyLibrary.INSTANCE.StopProxy()
+    }
+
+    /** Сброс блокировок и пула после смены сети / пробуждения. 0 = ок, -1 = прокси не запущен. */
+    fun resetNetworkState(): Int {
+        return ProxyLibrary.INSTANCE.ResetNetworkState()
     }
 
     fun setPoolSize(size: Int) {

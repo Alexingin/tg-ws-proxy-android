@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust targets for Android
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build native library (libtgwsproxy.so)
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a   -P 24 -o app/src/main/jniLibs build --release
+          cargo ndk -t armeabi-v7a -P 21 -o app/src/main/jniLibs build --release
+          ls -la app/src/main/jniLibs/*
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Build APKs
+        run: gradle :app:assembleArm64Debug :app:assembleUniversalDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tg-ws-proxy-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

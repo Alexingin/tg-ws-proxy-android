@@ -25,6 +25,7 @@ struct ProxyState {
     pools: Arc<ProxyPools>,
     handle: tokio::task::JoinHandle<()>,
     cancel_tasks: CancellationToken,
+    dc_opt_map: HashMap<i32, String>,
 }
 
 static STATE: OnceCell<Mutex<Option<ProxyState>>> = OnceCell::new();
@@ -139,6 +140,7 @@ pub unsafe extern "C" fn StartProxy(
         pools,
         handle,
         cancel_tasks,
+        dc_opt_map,
     });
 
     0
@@ -178,6 +180,30 @@ pub extern "C" fn StopProxy() -> c_int {
     proxy::set_ws_pool_fronting_first(true);
 
     linfo!("StopProxy: exit");
+    0
+}
+
+/// Вызывается из Android при смене сети (Wi-Fi <-> LTE, потеря/появление
+/// связи) и при пробуждении устройства. Не блокирует: работа уходит в рантайм.
+/// Возвращает 0, если прокси запущен, иначе -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn ResetNetworkState() -> c_int {
+    let cell = state_cell();
+    let guard = cell.lock();
+    let state = match guard.as_ref() {
+        Some(s) => s,
+        None => return -1,
+    };
+    let pools = state.pools.clone();
+    let map = state.dc_opt_map.clone();
+    let cancel = state.cancel_tasks.clone();
+    drop(guard);
+    runtime().spawn(async move {
+        if cancel.is_cancelled() {
+            return;
+        }
+        pools.on_network_change(&map).await;
+    });
     0
 }
 

@@ -13,7 +13,7 @@ android {
         applicationId = "com.amurcanov.tgwsproxy"
         targetSdk = 35
         versionCode = 123
-        versionName = "1.2.3"
+        versionName = "1.2.3-stable"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -56,6 +56,18 @@ android {
     }
 
     signingConfigs {
+        // Постоянный debug-ключ форка: APK из GitHub Actions всегда подписан одним
+        // и тем же ключом, поэтому обновления ставятся поверх без удаления.
+        getByName("debug") {
+            val ciKey = rootProject.file("ci-debug-key.p12")
+            if (ciKey.exists()) {
+                storeFile = ciKey
+                storeType = "pkcs12"
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
             val keyFile = localProperties.getProperty("KEYSTORE_FILE")
             if (keyFile != null) {

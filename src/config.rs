@@ -15,7 +15,11 @@ pub const DEFAULT_SEND_BUF: usize = 256 * 1024;
 pub const DEFAULT_POOL_SZ: i32 = 4;
 
 // proxy/tg_ws_proxy.py: IP_FAIL_COOLDOWN / DC_FAIL_COOLDOWN / WS_FAIL_TIMEOUT
-pub const IP_FAIL_COOLDOWN: f64 = 3600.0;
+// Было 3600с: на телефоне один случайный таймаут (погас экран, Wi-Fi <-> LTE)
+// отправлял DC в fallback на час. В актуальном оригинале этой блокировки нет вовсе.
+pub const IP_FAIL_COOLDOWN: f64 = 30.0;
+// "Все домены ответили 302" раньше блокировало DC до перезапуска. Теперь — на 10 минут.
+pub const WS_BLACKLIST_TTL: f64 = 600.0;
 pub const DC_FAIL_COOLDOWN: f64 = 60.0;
 pub const WS_FAIL_TIMEOUT: f64 = 2.0;
 // Прямой WS-коннект при отсутствии cooldown — 5.0 как в оригинале.
@@ -52,7 +56,8 @@ pub const POOLED_FRAME_CAP: usize = WS_BRIDGE_CHUNK_SIZE + 32;
 pub const WS_POOL_REUSE_MAX_AGE: f64 = 120.0;
 pub const WS_POOL_CHECK_INTERVAL: f64 = 5.0;
 pub const WS_POOL_REFILL_BACKOFF_INITIAL: f64 = 1.0;
-pub const WS_POOL_REFILL_BACKOFF_MAX: f64 = 3600.0;
+// Было 3600с. На мобильной сети неудачи пополнения пула почти всегда временные.
+pub const WS_POOL_REFILL_BACKOFF_MAX: f64 = 60.0;
 pub const WS_POOL_CONNECT_TIMEOUT: f64 = 8.0;
 pub const WS_POOL_FRONTING_TIMEOUT: f64 = 7.0;
 pub const FRONTING_SNI: &str = "sprinthost.ru";
@@ -219,7 +224,8 @@ impl DcKey {
 
 // Global state — proxy/tg_ws_proxy.py: ws_blacklist / dc_fail_until / ip_fail_until
 pub static DC_OPT: Lazy<RwLock<HashMap<i32, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
-pub static WS_BLACKLIST: Lazy<RwLock<HashMap<DcKey, bool>>> =
+// Значение — момент (now_monotonic), до которого DC в чёрном списке.
+pub static WS_BLACKLIST: Lazy<RwLock<HashMap<DcKey, f64>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 pub static DC_FAIL_UNTIL: Lazy<RwLock<HashMap<DcKey, f64>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));

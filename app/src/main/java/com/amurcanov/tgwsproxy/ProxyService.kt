@@ -5,7 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -13,6 +20,7 @@ import android.os.PowerManager
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,12 +28,19 @@ import kotlin.time.Duration.Companion.milliseconds
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 
 class ProxyService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var statsJob: Job? = null
     private var restartJob: Job? = null
+    private var watchdogJob: Job? = null
+    private var networkResetJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    @Volatile private var currentNetwork: Network? = null
+    @Volatile private var screenOffAtMs: Long = 0L
     private var lastNotificationContent: String = ""
     private var lastNotificationAtMs: Long = 0L
     private var notificationStartedAtMs: Long = 0L
@@ -68,6 +83,15 @@ class ProxyService : Service() {
         private const val STATS_UPDATE_MS = 3_000L
         private const val NOTIFICATION_MIN_UPDATE_MS = 3_000L
         private const val NATIVE_STOP_WAIT_MS = 3_000L
+
+        // Сторожок: раз в N мс проверяем, что локальный порт принимает подключения.
+        private const val WATCHDOG_INTERVAL_MS = 30_000L
+        private const val WATCHDOG_CONNECT_TIMEOUT_MS = 2_000
+        private const val WATCHDOG_FAILS_BEFORE_RESTART = 2
+        // Сеть часто "дребезжит" при переключении — ждём, пока успокоится.
+        private const val NETWORK_RESET_DEBOUNCE_MS = 1_500L
+        // Сбрасывать пул при включении экрана, только если он был выключен дольше этого.
+        private const val SCREEN_OFF_RESET_MIN_MS = 60_000L
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
@@ -188,6 +212,7 @@ class ProxyService : Service() {
                             _isVerifiedRunning.value = true
                             updateNotification(getString(R.string.notification_running), force = true)
                             Log.i(TAG, "Proxy ready: listening on port $port")
+                            startMonitors()
                         }
                     }
                 } else {
@@ -274,6 +299,7 @@ class ProxyService : Service() {
 
             statsJob?.cancel()
             statsJob = null
+            stopMonitors()
 
             requestNativeStop("restart")
             releaseWakeLock()
@@ -322,6 +348,7 @@ class ProxyService : Service() {
     private fun stopProxy() {
         if (stopInProgress) return
         stopInProgress = true
+        stopMonitors()
         restartJob?.cancel()
         restartJob = null
         statsJob?.cancel()
@@ -501,6 +528,7 @@ class ProxyService : Service() {
     }
 
     override fun onDestroy() {
+        stopMonitors()
         restartJob?.cancel()
         restartJob = null
         statsJob?.cancel()
@@ -511,6 +539,156 @@ class ProxyService : Service() {
         }
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    // -----------------------------------------------------------------------
+    // Мониторы: смена сети, пробуждение экрана, сторожок локального порта.
+    // -----------------------------------------------------------------------
+
+    private fun startMonitors() {
+        stopMonitors()
+        registerNetworkCallback()
+        registerScreenReceiver()
+        startWatchdog()
+    }
+
+    private fun stopMonitors() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        networkResetJob?.cancel()
+        networkResetJob = null
+        networkCallback?.let { cb ->
+            try {
+                (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(cb)
+            } catch (_: Exception) {
+            }
+        }
+        networkCallback = null
+        currentNetwork = null
+        screenReceiver?.let { r ->
+            try {
+                unregisterReceiver(r)
+            } catch (_: Exception) {
+            }
+        }
+        screenReceiver = null
+    }
+
+    /** Сброс состояния движка с антидребезгом. */
+    private fun scheduleNetworkReset(reason: String) {
+        networkResetJob?.cancel()
+        networkResetJob = serviceScope.launch {
+            delay(NETWORK_RESET_DEBOUNCE_MS.milliseconds)
+            if (!_isRunning.value || stopInProgress) return@launch
+            try {
+                val r = NativeProxy.resetNetworkState()
+                Log.i(TAG, "Network state reset ($reason) -> $r")
+            } catch (e: Throwable) {
+                Log.w(TAG, "resetNetworkState failed", e)
+            }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val prev = currentNetwork
+                currentNetwork = network
+                // Первый вызов сразу после регистрации — это текущая сеть, не смена.
+                if (prev != null && prev != network) {
+                    scheduleNetworkReset("network switched")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                if (network == currentNetwork) {
+                    currentNetwork = null
+                    // Сеть пропала: при появлении новой onAvailable увидит prev == null,
+                    // поэтому сбрасываем здесь (сработает после антидребезга).
+                    scheduleNetworkReset("network lost")
+                }
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(cb)
+            } else {
+                val req = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                cm.registerNetworkCallback(req, cb)
+            }
+            networkCallback = cb
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback", e)
+        }
+    }
+
+    private fun registerScreenReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_OFF -> screenOffAtMs = System.currentTimeMillis()
+                    Intent.ACTION_SCREEN_ON -> {
+                        val offFor = if (screenOffAtMs > 0) System.currentTimeMillis() - screenOffAtMs else 0L
+                        screenOffAtMs = 0L
+                        if (offFor >= SCREEN_OFF_RESET_MIN_MS) {
+                            scheduleNetworkReset("screen on after ${offFor / 1000}s")
+                        }
+                    }
+                }
+            }
+        }
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            // SCREEN_ON/OFF шлёт система — они приходят и в неэкспортируемый ресивер.
+            ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            screenReceiver = receiver
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register screen receiver", e)
+        }
+    }
+
+    /**
+     * Если локальный порт перестал принимать подключения (движок завис/упал),
+     * Telegram не может достучаться до прокси. Два провала подряд — перезапуск,
+     * то же самое, что нажать «Перезапуск» в уведомлении.
+     */
+    private fun startWatchdog() {
+        watchdogJob = serviceScope.launch {
+            var fails = 0
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS.milliseconds)
+                if (!_isRunning.value || stopInProgress || restartJob?.isActive == true) {
+                    fails = 0
+                    continue
+                }
+                val host = if (lastBindIp == "0.0.0.0" || lastBindIp == "::") "127.0.0.1" else lastBindIp
+                val alive = try {
+                    Socket().use { s ->
+                        s.connect(InetSocketAddress(host, lastPort), WATCHDOG_CONNECT_TIMEOUT_MS)
+                    }
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+                if (alive) {
+                    fails = 0
+                } else {
+                    fails++
+                    Log.w(TAG, "Watchdog: port $lastPort not answering ($fails/$WATCHDOG_FAILS_BEFORE_RESTART)")
+                    if (fails >= WATCHDOG_FAILS_BEFORE_RESTART) {
+                        fails = 0
+                        withContext(Dispatchers.Main) { restartProxy() }
+                    }
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
