@@ -12,12 +12,15 @@ import java.net.URL
 const val UPDATE_CHECK_NEVER = -1
 const val DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 12
 private const val UPDATE_LOG_TAG = "TgWsProxy"
-private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/amurcanov/tg-ws-proxy-android/releases?per_page=30"
-private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/amurcanov/tg-ws-proxy-android/releases/latest"
-private const val GITHUB_LATEST_RELEASE_WEB_URL = "https://github.com/amurcanov/tg-ws-proxy-android/releases/latest"
-private const val GITHUB_RELEASE_TAG_URL_PREFIX = "https://github.com/amurcanov/tg-ws-proxy-android/releases/tag/"
-private const val GITHUB_TAGS_URL = "https://api.github.com/repos/amurcanov/tg-ws-proxy-android/tags?per_page=100"
-private const val GITHUB_TAG_TREE_URL_PREFIX = "https://github.com/amurcanov/tg-ws-proxy-android/tree/"
+// Репозиторий, из которого приложение берёт обновления и на который ведут ссылки в UI.
+const val PROJECT_REPO = "Alexingin/tg-ws-proxy-android"
+const val PROJECT_REPO_URL = "https://github.com/$PROJECT_REPO"
+private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/$PROJECT_REPO/releases?per_page=30"
+private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/$PROJECT_REPO/releases/latest"
+private const val GITHUB_LATEST_RELEASE_WEB_URL = "$PROJECT_REPO_URL/releases/latest"
+private const val GITHUB_RELEASE_TAG_URL_PREFIX = "$PROJECT_REPO_URL/releases/tag/"
+private const val GITHUB_TAGS_URL = "https://api.github.com/repos/$PROJECT_REPO/tags?per_page=100"
+private const val GITHUB_TAG_TREE_URL_PREFIX = "$PROJECT_REPO_URL/tree/"
 private const val GITHUB_API_RATE_LIMIT_FALLBACK_MS = 30L * 60L * 1000L
 private val VERSION_NUMBER_REGEX = Regex("\\d+(?:\\.\\d+)*")
 @Volatile

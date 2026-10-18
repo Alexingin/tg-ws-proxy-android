@@ -1,15 +1,22 @@
 name: Build APK
 
+# Любой пуш — тестовая сборка (APK в разделе Artifacts запуска).
+# Тег вида v1.2.4 — релиз: APK публикуются на странице Releases.
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Rust targets for Android
         run: rustup target add aarch64-linux-android armv7-linux-androideabi
@@ -19,27 +26,85 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      # Обе архитектуры собираются под API 21 (Android 5.0). Раньше arm64
+      # собирался под API 24, и универсальный APK падал на 64-битных Android 5–6.
       - name: Build native library (libtgwsproxy.so)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          cargo ndk -t arm64-v8a   -P 24 -o app/src/main/jniLibs build --release
+          cargo ndk -t arm64-v8a   -P 21 -o app/src/main/jniLibs build --release
           cargo ndk -t armeabi-v7a -P 21 -o app/src/main/jniLibs build --release
           ls -la app/src/main/jniLibs/*
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "9.6.0"
 
-      - name: Build APKs
-        run: gradle :app:assembleArm64Debug :app:assembleUniversalDebug --no-daemon --stacktrace
+      - name: Resolve version
+        id: ver
+        run: |
+          base=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$base" ]]; then
+              echo "::error::Тег v$tag не совпадает с versionName $base в app/build.gradle.kts"
+              exit 1
+            fi
+            suffix=""
+          else
+            suffix="-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
+          echo "version=$base$suffix" >> "$GITHUB_OUTPUT"
+          echo "Version: $base$suffix"
 
-      - uses: actions/upload-artifact@v4
+      - name: Prepare release key
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "$RELEASE_KEYSTORE_BASE64" ]]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release-key.p12"
+            echo "RELEASE_KEYSTORE_FILE=$RUNNER_TEMP/release-key.p12" >> "$GITHUB_ENV"
+            echo "Release key: OK"
+          else
+            echo "::warning::Секрет RELEASE_KEYSTORE_BASE64 не задан — APK подписаны тестовым ключом"
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Релиз без релизного ключа запрещён"
+              exit 1
+            fi
+          fi
+
+      - name: Build APKs
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: >
+          gradle :app:assembleArm64Release :app:assembleUniversalRelease
+          -PversionSuffix="${{ steps.ver.outputs.suffix }}"
+          --no-daemon --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          v="${{ steps.ver.outputs.version }}"
+          cp app/build/outputs/apk/arm64/release/*.apk     "dist/tg-ws-proxy-$v-arm64.apk"
+          cp app/build/outputs/apk/universal/release/*.apk "dist/tg-ws-proxy-$v-universal.apk"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v6
         with:
-          name: tg-ws-proxy-apk
-          path: app/build/outputs/apk/**/*.apk
+          name: tg-ws-proxy-${{ steps.ver.outputs.version }}
+          path: dist/*.apk
           if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

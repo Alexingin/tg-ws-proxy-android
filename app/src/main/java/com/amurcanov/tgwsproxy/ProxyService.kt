@@ -57,6 +57,7 @@ class ProxyService : Service() {
     private var lastCfPriority: Boolean = true
     private var lastCfDomain: String = ""
     private var lastSecretKey: String = ""
+    private var lastKeepAwake: Boolean = true
 
     companion object {
         const val ACTION_START = "com.amurcanov.tgwsproxy.START"
@@ -70,6 +71,7 @@ class ProxyService : Service() {
         const val EXTRA_CFPROXY_PRIORITY = "EXTRA_CFPROXY_PRIORITY"
         const val EXTRA_CFPROXY_DOMAIN = "EXTRA_CFPROXY_DOMAIN"
         const val EXTRA_SECRET_KEY = "EXTRA_SECRET_KEY"
+        const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
         
         private const val NOTIFICATION_ID = 101
         private const val CHANNEL_ID = "TG_WS_Proxy_Service_v4"
@@ -116,6 +118,7 @@ class ProxyService : Service() {
                 val cfPriority = intent.getBooleanExtra(EXTRA_CFPROXY_PRIORITY, true)
                 val cfDomain = intent.getStringExtra(EXTRA_CFPROXY_DOMAIN) ?: ""
                 val secretKey = intent.getStringExtra(EXTRA_SECRET_KEY) ?: ""
+                lastKeepAwake = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, true)
                 startProxy(bindIp, port, ips, poolSize, cfEnabled, cfPriority, cfDomain, secretKey)
             }
             ACTION_STOP -> {
@@ -408,6 +411,10 @@ class ProxyService : Service() {
     }
 
     private fun acquireWakeLock() {
+        if (!lastKeepAwake) {
+            Log.d(TAG, "WakeLock disabled in settings")
+            return
+        }
         try {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
@@ -427,6 +434,7 @@ class ProxyService : Service() {
      * Periodically refresh wakelock to prevent system from expiring it.
      */
     private fun refreshWakeLock() {
+        if (!lastKeepAwake) return
         try {
             wakeLock?.let {
                 if (it.isHeld) {
