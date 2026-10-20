@@ -12,6 +12,9 @@ interface ProxyLibrary : Library {
     fun StartProxy(host: String, port: Int, dcIps: String, secret: String, verbose: Int): Int
     fun StopProxy(): Int
     fun ResetNetworkState(): Int
+    fun GetClientIdleSeconds(): Int
+    fun GetActiveConnections(): Int
+    fun GetTrafficBytes(): Long
     fun SetPoolSize(size: Int)
     fun SetBufferSizeKb(kb: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
@@ -39,6 +42,13 @@ object NativeProxy {
     fun resetNetworkState(): Int {
         return ProxyLibrary.INSTANCE.ResetNetworkState()
     }
+
+    /** Секунд без новых подключений Telegram; -1 — прокси не запущен. */
+    fun clientIdleSeconds(): Int = ProxyLibrary.INSTANCE.GetClientIdleSeconds()
+
+    fun activeConnections(): Int = ProxyLibrary.INSTANCE.GetActiveConnections()
+
+    fun trafficBytes(): Long = ProxyLibrary.INSTANCE.GetTrafficBytes()
 
     fun setPoolSize(size: Int) {
         ProxyLibrary.INSTANCE.SetPoolSize(size)

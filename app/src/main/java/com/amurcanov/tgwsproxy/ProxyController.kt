@@ -33,6 +33,7 @@ object ProxyController {
         val customCfDomain = settingsStore.customCfDomain.first().trim()
         val secretKey = ensureSecretKey(settingsStore)
         val keepAwake = settingsStore.keepAwake.first()
+        val verbose = settingsStore.logShowDebug.first()
 
         val parsedIps = buildList {
             if (!isDcAuto) {
@@ -70,6 +71,7 @@ object ProxyController {
                 )
                 putExtra(ProxyService.EXTRA_SECRET_KEY, secretKey)
                 putExtra(ProxyService.EXTRA_KEEP_AWAKE, keepAwake)
+                putExtra(ProxyService.EXTRA_VERBOSE, verbose)
             }
         )
         ProxyTileService.requestSync(context)

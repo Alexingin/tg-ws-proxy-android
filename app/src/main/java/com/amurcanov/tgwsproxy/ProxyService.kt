@@ -41,6 +41,8 @@ class ProxyService : Service() {
     private var screenReceiver: BroadcastReceiver? = null
     @Volatile private var currentNetwork: Network? = null
     @Volatile private var screenOffAtMs: Long = 0L
+    private var lastTrafficBytes: Long = -1L
+    private var lastTrafficAtMs: Long = 0L
     private var lastNotificationContent: String = ""
     private var lastNotificationAtMs: Long = 0L
     private var notificationStartedAtMs: Long = 0L
@@ -58,6 +60,7 @@ class ProxyService : Service() {
     private var lastCfDomain: String = ""
     private var lastSecretKey: String = ""
     private var lastKeepAwake: Boolean = true
+    private var lastVerbose: Boolean = false
 
     companion object {
         const val ACTION_START = "com.amurcanov.tgwsproxy.START"
@@ -72,6 +75,7 @@ class ProxyService : Service() {
         const val EXTRA_CFPROXY_DOMAIN = "EXTRA_CFPROXY_DOMAIN"
         const val EXTRA_SECRET_KEY = "EXTRA_SECRET_KEY"
         const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
+        const val EXTRA_VERBOSE = "EXTRA_VERBOSE"
         
         private const val NOTIFICATION_ID = 101
         private const val CHANNEL_ID = "TG_WS_Proxy_Service_v4"
@@ -81,13 +85,17 @@ class ProxyService : Service() {
         private const val WAKELOCK_TIMEOUT_MS = 30L * 60 * 1000
         private const val WAKELOCK_REFRESH_MS = 25L * 60 * 1000
 
-        // Stats/notification update interval
+        // Stats/notification update interval (экран включён / выключен)
         private const val STATS_UPDATE_MS = 3_000L
+        private const val STATS_UPDATE_SCREEN_OFF_MS = 20_000L
+        // Wakelock держим, пока Telegram активен: есть соединения или новые
+        // подключения были недавно. Без активности отпускаем — телефон спит.
+        private const val WAKELOCK_IDLE_RELEASE_SEC = 180
         private const val NOTIFICATION_MIN_UPDATE_MS = 3_000L
         private const val NATIVE_STOP_WAIT_MS = 3_000L
 
         // Сторожок: раз в N мс проверяем, что локальный порт принимает подключения.
-        private const val WATCHDOG_INTERVAL_MS = 30_000L
+        private const val WATCHDOG_INTERVAL_MS = 60_000L
         private const val WATCHDOG_CONNECT_TIMEOUT_MS = 2_000
         private const val WATCHDOG_FAILS_BEFORE_RESTART = 2
         // Сеть часто "дребезжит" при переключении — ждём, пока успокоится.
@@ -119,6 +127,7 @@ class ProxyService : Service() {
                 val cfDomain = intent.getStringExtra(EXTRA_CFPROXY_DOMAIN) ?: ""
                 val secretKey = intent.getStringExtra(EXTRA_SECRET_KEY) ?: ""
                 lastKeepAwake = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, true)
+                lastVerbose = intent.getBooleanExtra(EXTRA_VERBOSE, false)
                 startProxy(bindIp, port, ips, poolSize, cfEnabled, cfPriority, cfDomain, secretKey)
             }
             ACTION_STOP -> {
@@ -207,7 +216,9 @@ class ProxyService : Service() {
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, cfDomain)
-                val result = NativeProxy.startProxy(bindIp, port, ips, secretKey, 1)
+                // Подробные (debug) логи движка — только если включены в фильтре логов:
+                // каждая строка уходит в logcat и стоит CPU.
+                val result = NativeProxy.startProxy(bindIp, port, ips, secretKey, if (lastVerbose) 1 else 0)
                 if (result == 0) {
                     serviceScope.launch {
                         if (!stopInProgress) {
@@ -252,8 +263,12 @@ class ProxyService : Service() {
             }
 
             while (isActive) {
-                delay(STATS_UPDATE_MS.milliseconds)
+                val interactive = isScreenOn()
+                delay((if (interactive) STATS_UPDATE_MS else STATS_UPDATE_SCREEN_OFF_MS).milliseconds)
                 if (_isRunning.value && !stopInProgress) {
+                    updateSmartWakeLock()
+                    // При выключенном экране уведомление никто не видит — не обновляем.
+                    if (!interactive) continue
                     try {
                         val rawStats = NativeProxy.getStats() ?: continue
                         val upRaw = extractStat(rawStats, "up=")
@@ -410,6 +425,42 @@ class ProxyService : Service() {
         }
     }
 
+    private fun isScreenOn(): Boolean = try {
+        (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
+    } catch (_: Exception) {
+        true
+    }
+
+    /**
+     * «Умный» wakelock (issue #253): держим его, только пока Telegram активен —
+     * были новые подключения или шёл трафик в последние минуты. Просто
+     * открытое, но молчащее соединение не считается: иначе телефон не спал бы
+     * никогда. Как только Telegram снова что-то передаст, захватим заново.
+     */
+    private fun updateSmartWakeLock() {
+        if (!lastKeepAwake) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val needAwake = try {
+            val idle = NativeProxy.clientIdleSeconds()
+            val traffic = NativeProxy.trafficBytes()
+            if (traffic != lastTrafficBytes) {
+                lastTrafficBytes = traffic
+                lastTrafficAtMs = now
+            }
+            val trafficRecent = now - lastTrafficAtMs < WAKELOCK_IDLE_RELEASE_SEC * 1000L
+            idle in 0 until WAKELOCK_IDLE_RELEASE_SEC || trafficRecent
+        } catch (_: Throwable) {
+            true
+        }
+        val held = wakeLock?.isHeld == true
+        if (needAwake && !held) {
+            acquireWakeLock()
+        } else if (!needAwake && held) {
+            Log.d(TAG, "WakeLock released: Telegram idle")
+            releaseWakeLock()
+        }
+    }
+
     private fun acquireWakeLock() {
         if (!lastKeepAwake) {
             Log.d(TAG, "WakeLock disabled in settings")
@@ -435,6 +486,8 @@ class ProxyService : Service() {
      */
     private fun refreshWakeLock() {
         if (!lastKeepAwake) return
+        // Отпущен «умной» логикой — не захватываем заново по таймеру.
+        if (wakeLock?.isHeld != true) return
         try {
             wakeLock?.let {
                 if (it.isHeld) {

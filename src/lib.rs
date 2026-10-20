@@ -178,6 +178,7 @@ pub extern "C" fn StopProxy() -> c_int {
     IP_FAIL_UNTIL.write().clear();
     cfproxy::clear_cfproxy_429_cooldowns();
     proxy::set_ws_pool_fronting_first(true);
+    proxy::reset_tcp_backoff();
 
     linfo!("StopProxy: exit");
     0
@@ -205,6 +206,28 @@ pub extern "C" fn ResetNetworkState() -> c_int {
         pools.on_network_change(&map).await;
     });
     0
+}
+
+/// Сколько секунд не было новых подключений Telegram (-1, если прокси не запущен).
+/// Android по этому решает, держать ли wakelock.
+#[unsafe(no_mangle)]
+pub extern "C" fn GetClientIdleSeconds() -> c_int {
+    if state_cell().lock().is_none() {
+        return -1;
+    }
+    config::client_idle_secs().min(i32::MAX as f64) as c_int
+}
+
+/// Суммарный трафик (байты вверх + вниз) с момента запуска.
+#[unsafe(no_mangle)]
+pub extern "C" fn GetTrafficBytes() -> i64 {
+    STATS.bytes_up.load(Ordering::Relaxed) + STATS.bytes_down.load(Ordering::Relaxed)
+}
+
+/// Число активных клиентских соединений.
+#[unsafe(no_mangle)]
+pub extern "C" fn GetActiveConnections() -> c_int {
+    STATS.connections_active.load(Ordering::Relaxed) as c_int
 }
 
 #[unsafe(no_mangle)]

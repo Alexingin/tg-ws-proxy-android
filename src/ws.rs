@@ -193,9 +193,50 @@ pub struct RawWebSocket {
     frag: tokio::sync::Mutex<Vec<u8>>,
     pub closed: AtomicBool,
     pub secure: bool,
+    /// Дескриптор TCP-сокета (живёт столько же, сколько сам RawWebSocket).
+    /// Нужен, чтобы без чтения потока понять, не закрыл ли сервер соединение.
+    raw_fd: i32,
 }
 
 impl RawWebSocket {
+    /// Аналог pool._is_stale в оригинале (reader.at_eof / exception).
+    /// Простаивающее соединение из пула никто не читает, поэтому раньше
+    /// закрытие со стороны сервера (FIN/RST, close-фрейм) замечалось только
+    /// после того, как его отдавали Telegram, — и подключение «висело».
+    /// Проверяем сокет неблокирующим peek: EOF, ошибка или любые пришедшие
+    /// данные (до отправки relay_init сервер молчит) — соединение негодно.
+    pub fn is_stale(&self) -> bool {
+        if self.is_closed() {
+            return true;
+        }
+        if let Ok(r) = self.reader.try_lock() {
+            let buffered = match &*r {
+                WsReader::Tls(b) => !b.buffer().is_empty(),
+                WsReader::Plain(b) => !b.buffer().is_empty(),
+            };
+            if buffered {
+                return true;
+            }
+        }
+        if self.raw_fd < 0 {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::BorrowedFd;
+            // SAFETY: fd принадлежит TcpStream внутри self и жив, пока жив self.
+            let fd = unsafe { BorrowedFd::borrow_raw(self.raw_fd) };
+            let sock = socket2::SockRef::from(&fd);
+            let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 1];
+            return match sock.peek(&mut buf) {
+                Ok(_) => true, // 0 = EOF, >0 = неожиданные данные
+                Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+            };
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
@@ -575,9 +616,11 @@ fn set_sock_opts(stream: &TcpStream) {
     if TCP_NODELAY {
         let _ = stream.set_nodelay(true);
     }
-    // Аналог Go/Python: keepalive 30s — детект мёртвых соединений на мобиле.
+    // TCP keepalive. Было 30с: каждый простаивающий сокет будил радиомодуль
+    // каждые полминуты — заметный расход батареи. Мёртвые соединения теперь
+    // ловят is_stale() и ping моста, так что хватает 120с.
     let sock = socket2::SockRef::from(stream);
-    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30));
+    let ka = socket2::TcpKeepalive::new().with_time(TCP_KEEPALIVE_IDLE);
     let _ = sock.set_tcp_keepalive(&ka);
     // proxy/raw_websocket.py::set_sock_opts — buffer_size из конфига.
     let buf = BUFFER_SIZE.load(std::sync::atomic::Ordering::Relaxed);
@@ -641,6 +684,7 @@ async fn handshake_tls(
             frag: tokio::sync::Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
             secure: true,
+            raw_fd: -1,
         });
     }
     let location = headers.get("location").cloned().unwrap_or_default();
@@ -681,6 +725,7 @@ async fn handshake_plain(
             frag: tokio::sync::Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
             secure: false,
+            raw_fd: -1,
         });
     }
     let location = headers.get("location").cloned().unwrap_or_default();
@@ -800,10 +845,22 @@ pub async fn ws_connect_once_full(
         Err(_) => return Err(WsError::Timeout),
     };
     set_sock_opts(&raw_conn);
+    #[cfg(unix)]
+    let raw_fd = {
+        use std::os::fd::AsRawFd;
+        raw_conn.as_raw_fd()
+    };
+    #[cfg(not(unix))]
+    let raw_fd = -1;
 
     if !secure {
         let (read_half, write_half) = tokio::io::split(raw_conn);
-        return handshake_plain(read_half, write_half, domain, path, timeout).await;
+        return handshake_plain(read_half, write_half, domain, path, timeout)
+            .await
+            .map(|mut ws| {
+                ws.raw_fd = raw_fd;
+                ws
+            });
     }
 
     let sni_name = sni.unwrap_or(domain);
@@ -833,7 +890,12 @@ pub async fn ws_connect_once_full(
         };
 
     let (read_half, write_half) = tokio::io::split(tls_conn);
-    handshake_tls(read_half, write_half, domain, path, timeout).await
+    handshake_tls(read_half, write_half, domain, path, timeout)
+        .await
+        .map(|mut ws| {
+            ws.raw_fd = raw_fd;
+            ws
+        })
 }
 
 // wsConnect: пытается ip, при необходимости резолвит DoH

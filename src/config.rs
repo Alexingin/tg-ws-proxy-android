@@ -46,7 +46,20 @@ pub const PROTO_PADDED_INTERMEDIATE_INT: u32 = 0xDDDDDDDD;
 pub const RESERVED_FIRST_BYTE: u8 = 0xEF;
 
 pub const BRIDGE_READ_TIMEOUT: Duration = Duration::from_secs(120);
-pub const BRIDGE_PING_INTERVAL: Duration = Duration::from_secs(30);
+// Было 30с. Telegram сам пингует свои соединения; частые пинги прокси
+// на каждом мосту лишний раз будили радиомодуль.
+pub const BRIDGE_PING_INTERVAL: Duration = Duration::from_secs(60);
+pub const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(120);
+
+// Пул «засыпает», если Telegram не открывал новых соединений столько секунд:
+// перестаём пересоздавать заготовленные соединения (каждые 2 минуты на каждый
+// DC — это постоянная работа радиомодуля и главный расход батареи).
+// Следующее подключение Telegram сразу будит пул.
+pub const WS_POOL_IDLE_AFTER: f64 = 120.0;
+
+// proxy/bridge.py: TCP_BACKOFF_INITIAL / TCP_BACKOFF_MAX
+pub const TCP_BACKOFF_INITIAL: f64 = 30.0;
+pub const TCP_BACKOFF_MAX: f64 = 3600.0;
 pub const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WS_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 pub const WS_BRIDGE_CHUNK_SIZE: usize = 64 * 1024;
@@ -233,6 +246,23 @@ pub static IP_FAIL_UNTIL: Lazy<RwLock<HashMap<String, f64>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 pub static ZERO64: [u8; 64] = [0u8; 64];
+
+// Момент (now_monotonic * 1000) последнего нового подключения клиента.
+pub static LAST_CLIENT_AT_MS: AtomicI64 = AtomicI64::new(0);
+
+pub fn mark_client_activity() {
+    LAST_CLIENT_AT_MS.store((now_monotonic() * 1000.0) as i64, Ordering::Relaxed);
+}
+
+/// Сколько секунд не было новых подключений клиента.
+pub fn client_idle_secs() -> f64 {
+    let last = LAST_CLIENT_AT_MS.load(Ordering::Relaxed) as f64 / 1000.0;
+    (now_monotonic() - last).max(0.0)
+}
+
+pub fn pool_is_idle() -> bool {
+    client_idle_secs() > WS_POOL_IDLE_AFTER
+}
 
 // ---------------------------------------------------------------------------
 // Domain validation — proxy/config.py::_is_valid_domain / _normalize_domain_pool

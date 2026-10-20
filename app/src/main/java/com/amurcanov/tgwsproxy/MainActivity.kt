@@ -193,9 +193,22 @@ fun MainContent(settingsStore: SettingsStore) {
     val safeBottomInset = with(density) { WindowInsets.safeDrawing.getBottom(density).toDp() }
     val navOverlayReserve = safeBottomInset + 96.dp
 
-    DisposableEffect(Unit) {
-        LogManager.startListening()
-        onDispose { LogManager.stopListening() }
+    // Читаем logcat, только пока приложение на экране. Раньше чтение и
+    // разбор логов продолжались в фоне всё время, пока жил процесс.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> LogManager.startListening()
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> LogManager.stopListening()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            LogManager.stopListening()
+        }
     }
 
     LaunchedEffect(updateCheckIntervalHours, updateLastCheckAt) {
@@ -595,6 +608,8 @@ object LogManager {
     private var job: Job? = null
     private var logcatProcess: Process? = null
     private val nextKey = AtomicLong(0)
+    @Volatile
+    private var resumeFrom: String? = null
 
     // Buffered channel — absorbs bursts of log lines without blocking the reader
     private val logChannel = Channel<LogEntry>(capacity = BUFFERED)
@@ -606,7 +621,11 @@ object LogManager {
             val readerJob = launch(Dispatchers.IO) {
                 try {
                     val pid = android.os.Process.myPid()
-                    val process = ProcessBuilder("logcat", "-v", "tag", "--pid", pid.toString())
+                    val cmd = mutableListOf("logcat", "-v", "tag", "--pid", pid.toString())
+                    // После возврата из фона читаем только новое (с момента остановки),
+                    // иначе весь буфер logcat добавился бы в список ещё раз.
+                    resumeFrom?.let { cmd += listOf("-T", it) }
+                    val process = ProcessBuilder(cmd)
                         .redirectErrorStream(true)
                         .start()
                         
@@ -630,6 +649,9 @@ object LogManager {
             launch {
                 val pendingBatch = mutableListOf<LogEntry>()
                 while (isActive) {
+                    // Ждём первую запись без опроса: раньше цикл просыпался
+                    // каждые 150 мс даже без логов и тратил батарею.
+                    pendingBatch.add(logChannel.receive())
                     // Drain the channel (non-blocking)
                     var received = logChannel.tryReceive()
                     while (received.isSuccess) {
@@ -681,6 +703,10 @@ object LogManager {
     }
 
     fun stopListening() {
+        if (job != null) {
+            resumeFrom = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+                .format(java.util.Date())
+        }
         job?.cancel()
         job = null
         logcatProcess?.destroy()

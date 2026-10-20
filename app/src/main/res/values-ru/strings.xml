@@ -135,5 +135,5 @@
     <string name="client_choose_error">Ошибка при выборе клиента</string>
     <string name="ip_and_port">IP и порт</string>
     <string name="keep_awake">Не давать телефону засыпать</string>
-    <string name="keep_awake_subtitle">Стабильнее в фоне, но больше расход батареи. Применяется при следующем запуске прокси.</string>
+    <string name="keep_awake_subtitle">Держится, только пока Telegram активен, и отпускается в простое. Выключите, если расход батареи всё ещё большой. Применяется при следующем запуске прокси.</string>
 </resources>

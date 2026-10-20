@@ -135,5 +135,5 @@
     <string name="client_choose_error">Failed to choose a client</string>
     <string name="ip_and_port">IP and port</string>
     <string name="keep_awake">Keep the phone awake</string>
-    <string name="keep_awake_subtitle">More stable in the background, but uses more battery. Applies on the next proxy start.</string>
+    <string name="keep_awake_subtitle">Held only while Telegram is active and released when it is idle. Turn off if battery drain is still high. Applies on the next proxy start.</string>
 </resources>
