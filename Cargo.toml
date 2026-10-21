@@ -27,7 +27,10 @@ byteorder = "1"
 socket2 = "0.5"
 
 # HTTP-клиент для DoH/GitHub без TLS-дублирования: используем reqwest на rustls
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "http2", "stream"] }
+# cf_h2: тела запросов/ответов и поток для больших upload
+bytes = "1"
+futures-util = { version = "0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -41,3 +44,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+[dev-dependencies]
+# Только для тестов cf_h2: локальный HTTP/2-сервер с самоподписанным сертификатом.
+hyper = { version = "1", features = ["server", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+rcgen = "0.13"

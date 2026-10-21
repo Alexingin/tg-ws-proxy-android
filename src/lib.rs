@@ -1,3 +1,4 @@
+pub mod cf_h2;
 pub mod cfproxy;
 pub mod config;
 pub mod crypto;
@@ -179,6 +180,7 @@ pub extern "C" fn StopProxy() -> c_int {
     cfproxy::clear_cfproxy_429_cooldowns();
     proxy::set_ws_pool_fronting_first(true);
     proxy::reset_tcp_backoff();
+    cf_h2::CF_H2_POOL.reset();
 
     linfo!("StopProxy: exit");
     0
@@ -206,6 +208,12 @@ pub extern "C" fn ResetNetworkState() -> c_int {
         pools.on_network_change(&map).await;
     });
     0
+}
+
+/// Медиа через Cloudflare по HTTP/2 (экспериментально, по умолчанию выключено).
+#[unsafe(no_mangle)]
+pub extern "C" fn SetCfH2Media(v: c_int) {
+    cf_h2::CF_H2_MEDIA.store(v != 0, Ordering::Relaxed);
 }
 
 /// Сколько секунд не было новых подключений Telegram (-1, если прокси не запущен).

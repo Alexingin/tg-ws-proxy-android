@@ -41,6 +41,7 @@ class SettingsStore(private val context: Context) {
         val CUSTOM_CF_DOMAIN = stringPreferencesKey("custom_cf_domain")
         val AUTO_START_ON_BOOT = booleanPreferencesKey("auto_start_on_boot")
         val KEEP_AWAKE = booleanPreferencesKey("keep_awake")
+        val CF_H2_MEDIA = booleanPreferencesKey("cf_h2_media")
         val SECRET_KEY = stringPreferencesKey("secret_key")
         val LOG_SHOW_DEBUG = booleanPreferencesKey("log_show_debug")
         val LOG_SHOW_INFO = booleanPreferencesKey("log_show_info")
@@ -89,6 +90,8 @@ class SettingsStore(private val context: Context) {
     val autoStartOnBoot: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_START_ON_BOOT] ?: false }
     // Держать partial wakelock, пока прокси запущен (issue #253 — расход батареи).
     val keepAwake: Flow<Boolean> = context.dataStore.data.map { it[Keys.KEEP_AWAKE] ?: true }
+    // Медиа через Cloudflare по HTTP/2 (порт cf_h2 из TgWsProxy), пока экспериментально.
+    val cfH2Media: Flow<Boolean> = context.dataStore.data.map { it[Keys.CF_H2_MEDIA] ?: false }
     val secretKey: Flow<String> = context.dataStore.data.map { it[Keys.SECRET_KEY] ?: "" }
 
     val logShowDebug: Flow<Boolean> = context.dataStore.data.map { it[Keys.LOG_SHOW_DEBUG] ?: false }
@@ -152,6 +155,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun saveKeepAwake(enabled: Boolean) {
         context.dataStore.edit { it[Keys.KEEP_AWAKE] = enabled }
+    }
+
+    suspend fun saveCfH2Media(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.CF_H2_MEDIA] = enabled }
     }
 
     suspend fun saveUpdatePostpone(version: String, until: Long) {

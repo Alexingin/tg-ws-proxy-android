@@ -61,6 +61,7 @@ class ProxyService : Service() {
     private var lastSecretKey: String = ""
     private var lastKeepAwake: Boolean = true
     private var lastVerbose: Boolean = false
+    private var lastCfH2Media: Boolean = false
 
     companion object {
         const val ACTION_START = "com.amurcanov.tgwsproxy.START"
@@ -76,6 +77,7 @@ class ProxyService : Service() {
         const val EXTRA_SECRET_KEY = "EXTRA_SECRET_KEY"
         const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
         const val EXTRA_VERBOSE = "EXTRA_VERBOSE"
+        const val EXTRA_CF_H2_MEDIA = "EXTRA_CF_H2_MEDIA"
         
         private const val NOTIFICATION_ID = 101
         private const val CHANNEL_ID = "TG_WS_Proxy_Service_v4"
@@ -128,6 +130,7 @@ class ProxyService : Service() {
                 val secretKey = intent.getStringExtra(EXTRA_SECRET_KEY) ?: ""
                 lastKeepAwake = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, true)
                 lastVerbose = intent.getBooleanExtra(EXTRA_VERBOSE, false)
+                lastCfH2Media = intent.getBooleanExtra(EXTRA_CF_H2_MEDIA, false)
                 startProxy(bindIp, port, ips, poolSize, cfEnabled, cfPriority, cfDomain, secretKey)
             }
             ACTION_STOP -> {
@@ -216,6 +219,7 @@ class ProxyService : Service() {
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, cfDomain)
+                NativeProxy.setCfH2Media(lastCfH2Media)
                 // Подробные (debug) логи движка — только если включены в фильтре логов:
                 // каждая строка уходит в logcat и стоит CPU.
                 val result = NativeProxy.startProxy(bindIp, port, ips, secretKey, if (lastVerbose) 1 else 0)

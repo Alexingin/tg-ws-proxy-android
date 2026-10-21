@@ -136,4 +136,6 @@
     <string name="ip_and_port">IP и порт</string>
     <string name="keep_awake">Не давать телефону засыпать</string>
     <string name="keep_awake_subtitle">Держится, только пока Telegram активен, и отпускается в простое. Выключите, если расход батареи всё ещё большой. Применяется при следующем запуске прокси.</string>
+    <string name="cf_h2_media">Медиа через Cloudflare по HTTP/2 (эксперимент)</string>
+    <string name="cf_h2_media_subtitle">Если прямой маршрут не работает, медиа идёт через Cloudflare по одному общему HTTP/2-соединению. Нужен доступ к Cloudflare по порту 443; где он закрыт, прокси сам вернётся к обычному маршруту. Применяется при следующем запуске прокси.</string>
 </resources>

@@ -136,4 +136,6 @@
     <string name="ip_and_port">IP and port</string>
     <string name="keep_awake">Keep the phone awake</string>
     <string name="keep_awake_subtitle">Held only while Telegram is active and released when it is idle. Turn off if battery drain is still high. Applies on the next proxy start.</string>
+    <string name="cf_h2_media">Media via Cloudflare HTTP/2 (experimental)</string>
+    <string name="cf_h2_media_subtitle">When the direct route fails, media goes through Cloudflare over one shared HTTP/2 connection. Needs port 443 to Cloudflare; on networks where it is blocked the proxy falls back to the usual route. Applies on the next proxy start.</string>
 </resources>

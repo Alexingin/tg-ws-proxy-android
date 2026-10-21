@@ -845,6 +845,7 @@ impl ProxyPools {
         clear_cfproxy_429_cooldowns();
         clear_doh_cache();
         reset_tcp_backoff();
+        crate::cf_h2::CF_H2_POOL.reset();
         linfo!(
             "Network changed: cleared blacklist={} dc_fail={} ip_fail={}",
             bl, dcf, ipf
@@ -1532,6 +1533,7 @@ pub async fn do_fallback<R, W>(
     tg_enc: &TrackedStream,
     tg_dec: &TrackedStream,
     cancel_token: CancellationToken,
+    proto: u32,
 ) -> bool
 where
     R: AsyncReadExt + Unpin + Send + 'static,
@@ -1614,6 +1616,25 @@ where
             }
             ws.close().await;
             // send failed — падаем сквозь к CF/TCP на тех же halves.
+        }
+    }
+
+    // Шаг 2a: медиа через CF по HTTP/2 (оригинал: cf_h2, 48954ff).
+    // Если H2 не поднялся — halves не тронуты, идём в обычный CF WS.
+    if use_cf && is_media && crate::cf_h2::h2_enabled() {
+        if let Some(ch) = crate::cf_h2::CF_H2_POOL.open(dc, &label).await {
+            STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
+            crate::cf_h2::bridge_h2(
+                conn_read,
+                conn_write,
+                ch,
+                clt_dec.clone_state(),
+                clt_enc.clone_state(),
+                proto,
+                cancel_token,
+            )
+            .await;
+            return true;
         }
     }
 
@@ -2012,6 +2033,7 @@ async fn serve_core<R, W>(
                 &tg_encryptor,
                 &tg_decryptor,
                 cancel_token,
+                proto_int,
             )
             .await;
             if !ok {
@@ -2146,6 +2168,7 @@ async fn serve_core<R, W>(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
+            proto_int,
         )
         .await;
         if ok {
@@ -2210,6 +2233,7 @@ async fn serve_core<R, W>(
                     &tg_encryptor,
                     &tg_decryptor,
                     cancel_token,
+                    proto_int,
                 )
                 .await;
                 return;
@@ -2235,6 +2259,7 @@ async fn serve_core<R, W>(
                         &tg_encryptor,
                         &tg_decryptor,
                         cancel_token,
+                        proto_int,
                     )
                     .await;
                     return;

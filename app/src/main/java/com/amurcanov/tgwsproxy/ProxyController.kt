@@ -34,6 +34,7 @@ object ProxyController {
         val secretKey = ensureSecretKey(settingsStore)
         val keepAwake = settingsStore.keepAwake.first()
         val verbose = settingsStore.logShowDebug.first()
+        val cfH2Media = settingsStore.cfH2Media.first()
 
         val parsedIps = buildList {
             if (!isDcAuto) {
@@ -72,6 +73,7 @@ object ProxyController {
                 putExtra(ProxyService.EXTRA_SECRET_KEY, secretKey)
                 putExtra(ProxyService.EXTRA_KEEP_AWAKE, keepAwake)
                 putExtra(ProxyService.EXTRA_VERBOSE, verbose)
+                putExtra(ProxyService.EXTRA_CF_H2_MEDIA, cfH2Media)
             }
         )
         ProxyTileService.requestSync(context)

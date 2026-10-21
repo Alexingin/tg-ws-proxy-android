@@ -368,6 +368,9 @@ pub struct Stats {
     pub connections_http_reject: AtomicI64,
     pub connections_passthrough: AtomicI64,
     pub ws_errors: AtomicI64,
+    pub connections_h2: AtomicI64,
+    pub h2_requests: AtomicI64,
+    pub h2_errors: AtomicI64,
     pub bytes_up: AtomicI64,
     pub bytes_down: AtomicI64,
     pub pool_hits: AtomicI64,
@@ -428,6 +431,15 @@ impl Stats {
         if tcp > 0 {
             parts.push(format!("tcp:{}", tcp));
         }
+        let h2 = self.connections_h2.load(Ordering::Relaxed);
+        if h2 > 0 {
+            parts.push(format!(
+                "h2:{} (запр:{} ош:{})",
+                h2,
+                self.h2_requests.load(Ordering::Relaxed),
+                self.h2_errors.load(Ordering::Relaxed)
+            ));
+        }
         let err = self.ws_errors.load(Ordering::Relaxed);
         if err > 0 {
             parts.push(format!("ош:{}", err));
@@ -452,6 +464,9 @@ impl Stats {
         self.connections_http_reject.store(0, Ordering::Relaxed);
         self.connections_passthrough.store(0, Ordering::Relaxed);
         self.ws_errors.store(0, Ordering::Relaxed);
+        self.connections_h2.store(0, Ordering::Relaxed);
+        self.h2_requests.store(0, Ordering::Relaxed);
+        self.h2_errors.store(0, Ordering::Relaxed);
         self.bytes_up.store(0, Ordering::Relaxed);
         self.bytes_down.store(0, Ordering::Relaxed);
         self.pool_hits.store(0, Ordering::Relaxed);
