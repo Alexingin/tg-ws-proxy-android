@@ -2,6 +2,8 @@ name: Build APK
 
 # Любой пуш — тестовая сборка (APK в разделе Artifacts запуска).
 # Тег вида v1.2.4 — релиз: APK публикуются на странице Releases.
+# Тег вида v1.3.0-beta.1 — бета: публикуется как Pre-release, versionName
+# в APK будет 1.3.0-beta.1 (основа 1.3.0 должна совпадать с build.gradle.kts).
 on:
   push:
     branches: ["**"]
@@ -48,16 +50,24 @@ jobs:
         id: ver
         run: |
           base=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          prerelease=false
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME#v}"
-            if [[ "$tag" != "$base" ]]; then
+            tag_base="${tag%%-*}"
+            if [[ "$tag_base" != "$base" ]]; then
               echo "::error::Тег v$tag не совпадает с versionName $base в app/build.gradle.kts"
               exit 1
             fi
-            suffix=""
+            if [[ "$tag" == *-* ]]; then
+              suffix="-${tag#*-}"
+              prerelease=true
+            else
+              suffix=""
+            fi
           else
             suffix="-dev.${GITHUB_RUN_NUMBER}"
           fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
           echo "version=$base$suffix" >> "$GITHUB_OUTPUT"
           echo "Version: $base$suffix"
@@ -108,3 +118,4 @@ jobs:
         with:
           files: dist/*.apk
           generate_release_notes: true
+          prerelease: ${{ steps.ver.outputs.prerelease }}

@@ -89,7 +89,8 @@ fun isNewerVersion(local: String, remote: String): Boolean {
         if (r < l) return false
     }
 
-    return false
+    // Номера совпали: стабильная 1.3.0 новее беты 1.3.0-beta.1 / сборки 1.3.0-dev.N.
+    return isPreReleaseTag(local) && !isPreReleaseTag(remote)
 }
 
 private fun fetchLatestStableReleaseFromList(): AppReleaseInfo? {
@@ -129,6 +130,9 @@ private fun fetchLatestTagFromList(): AppReleaseInfo? {
         val json = tags.optJSONObject(i) ?: continue
         val tagName = normalizeVersionTag(json.optString("name"))
         if (tagName.isBlank()) continue
+        // Теги бет (v1.3.0-beta.1) не предлагаем: обновление со стабильной
+        // версии на бету — только по желанию, со страницы релизов.
+        if (isPreReleaseTag(tagName)) continue
 
         val tag = AppReleaseInfo(
             versionTag = tagName,
@@ -323,6 +327,11 @@ private fun JSONObject.toAppReleaseInfo(): AppReleaseInfo? {
 private fun versionParts(version: String): List<Int> {
     val normalized = VERSION_NUMBER_REGEX.find(version.trim())?.value ?: return emptyList()
     return normalized.split(".").mapNotNull { it.toIntOrNull() }
+}
+
+private fun isPreReleaseTag(tag: String): Boolean {
+    val number = VERSION_NUMBER_REGEX.find(tag)?.value ?: return false
+    return tag.substringAfter(number, "").startsWith("-")
 }
 
 private fun normalizeVersionTag(version: String): String {
