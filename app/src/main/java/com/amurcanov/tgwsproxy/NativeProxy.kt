@@ -16,6 +16,8 @@ interface ProxyLibrary : Library {
     fun GetActiveConnections(): Int
     fun GetTrafficBytes(): Long
     fun SetCfH2Media(v: Int)
+    fun GetBadHandshakes(): Long
+    fun GetGoodConnections(): Long
     fun SetPoolSize(size: Int)
     fun SetBufferSizeKb(kb: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
@@ -52,6 +54,10 @@ object NativeProxy {
     fun trafficBytes(): Long = ProxyLibrary.INSTANCE.GetTrafficBytes()
 
     fun setCfH2Media(enabled: Boolean) = ProxyLibrary.INSTANCE.SetCfH2Media(if (enabled) 1 else 0)
+
+    fun badHandshakes(): Long = ProxyLibrary.INSTANCE.GetBadHandshakes()
+
+    fun goodConnections(): Long = ProxyLibrary.INSTANCE.GetGoodConnections()
 
     fun setPoolSize(size: Int) {
         ProxyLibrary.INSTANCE.SetPoolSize(size)

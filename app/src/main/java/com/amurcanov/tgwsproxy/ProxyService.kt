@@ -107,6 +107,16 @@ class ProxyService : Service() {
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
+        /** Идёт запуск движка — повторный ACTION_START игнорируется. */
+        @Volatile
+        var isStarting: Boolean = false
+            private set
+
+        // Подсказка «Telegram использует старый ключ»
+        private const val HINT_NOTIFICATION_ID = 102
+        private const val BAD_HANDSHAKE_WINDOW_MS = 60_000L
+        private const val BAD_HANDSHAKE_THRESHOLD = 8
+        private const val BAD_HANDSHAKE_HINT_COOLDOWN_MS = 30L * 60 * 1000
         private val _isVerifiedRunning = MutableStateFlow(false)
         val isVerifiedRunning: StateFlow<Boolean> = _isVerifiedRunning
     }
@@ -114,6 +124,8 @@ class ProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Если процесс был убит системой — запишем причину в лог.
+        serviceScope.launch { Diagnostics.reportNewExits(this@ProxyService) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -134,6 +146,8 @@ class ProxyService : Service() {
                 startProxy(bindIp, port, ips, poolSize, cfEnabled, cfPriority, cfDomain, secretKey)
             }
             ACTION_STOP -> {
+                // Выключено пользователем — автоподъём больше не нужен.
+                KeepAlive.onUserStopped(this)
                 stopProxy()
             }
             ACTION_RESTART -> {
@@ -172,7 +186,8 @@ class ProxyService : Service() {
     private fun startProxy(bindIp: String, port: Int, ips: String, poolSize: Int = 4,
                            cfEnabled: Boolean = true, cfPriority: Boolean = true,
                            cfDomain: String = "", secretKey: String = "") {
-        if (_isRunning.value || stopInProgress) return
+        if (_isRunning.value || stopInProgress || isStarting) return
+        isStarting = true
         _isVerifiedRunning.value = false
 
         // Save params for restart
@@ -206,6 +221,7 @@ class ProxyService : Service() {
         Thread({
             val canObtainPort = isPortAvailable(bindIp, port)
             if (!canObtainPort) {
+                isStarting = false
                 val str = getString(R.string.port_is_not_available, port)
                 serviceScope.launch(Dispatchers.Main) {
                     Toast.makeText(this@ProxyService, str, Toast.LENGTH_SHORT).show()
@@ -223,9 +239,11 @@ class ProxyService : Service() {
                 // Подробные (debug) логи движка — только если включены в фильтре логов:
                 // каждая строка уходит в logcat и стоит CPU.
                 val result = NativeProxy.startProxy(bindIp, port, ips, secretKey, if (lastVerbose) 1 else 0)
+                isStarting = false
                 if (result == 0) {
                     serviceScope.launch {
                         if (!stopInProgress) {
+                            KeepAlive.onProxyStarted(this@ProxyService)
                             updateRunningState(true)
                             _isVerifiedRunning.value = true
                             updateNotification(getString(R.string.notification_running), force = true)
@@ -242,6 +260,7 @@ class ProxyService : Service() {
                     }
                 }
             } catch (e: Throwable) {
+                isStarting = false
                 Log.e(TAG, "Failed to start proxy via JNA", e)
                 serviceScope.launch {
                     updateNotification(getString(R.string.notification_error, e.message ?: ""), force = true)
@@ -271,6 +290,7 @@ class ProxyService : Service() {
                 delay((if (interactive) STATS_UPDATE_MS else STATS_UPDATE_SCREEN_OFF_MS).milliseconds)
                 if (_isRunning.value && !stopInProgress) {
                     updateSmartWakeLock()
+                    checkStaleSecret()
                     // При выключенном экране уведомление никто не видит — не обновляем.
                     if (!interactive) continue
                     try {
@@ -426,6 +446,66 @@ class ProxyService : Service() {
             Log.w(TAG, "onTaskRemoved: proxy is running, service stays alive")
             // The service continues because stopWithTask=false in manifest
             // No action needed — the service keeps running.
+        }
+    }
+
+    private var badWindowStartMs = 0L
+    private var badAtWindowStart = 0L
+    private var goodAtWindowStart = 0L
+    private var lastHintAtMs = 0L
+
+    /**
+     * Поток «bad handshake» без единого удачного подключения почти всегда
+     * значит, что Telegram подключается к 127.0.0.1 со старым ключом —
+     * например, переключился на старую запись прокси. Подсказываем, что делать.
+     */
+    private fun checkStaleSecret() {
+        val bad: Long
+        val good: Long
+        try {
+            bad = NativeProxy.badHandshakes()
+            good = NativeProxy.goodConnections()
+        } catch (_: Throwable) {
+            return
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (badWindowStartMs == 0L || now - badWindowStartMs > BAD_HANDSHAKE_WINDOW_MS) {
+            badWindowStartMs = now
+            badAtWindowStart = bad
+            goodAtWindowStart = good
+            return
+        }
+        val badDelta = bad - badAtWindowStart
+        val goodDelta = good - goodAtWindowStart
+        if (badDelta >= BAD_HANDSHAKE_THRESHOLD && goodDelta == 0L &&
+            now - lastHintAtMs > BAD_HANDSHAKE_HINT_COOLDOWN_MS) {
+            lastHintAtMs = now
+            Log.w("TgWsProxy", "[WARN] Telegram подключается со старым ключом ($badDelta попыток за минуту)")
+            showStaleSecretHint()
+        }
+    }
+
+    private fun showStaleSecretHint() {
+        try {
+            val openIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pi = PendingIntent.getActivity(
+                this, 3, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val n = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(getString(R.string.stale_secret_title))
+                .setContentText(getString(R.string.stale_secret_text))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.stale_secret_text)))
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.notify(HINT_NOTIFICATION_ID, n)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to show stale secret hint", e)
         }
     }
 

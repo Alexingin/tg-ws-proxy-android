@@ -30,6 +30,11 @@ class ProxyTileService : TileService() {
             }
         }
         renderTile()
+        // Шторку открыли, а прокси должен работать, но процесс был убит —
+        // поднимаем. Плитка при этом честно показывает текущее состояние.
+        if (!ProxyService.isRunning.value && KeepAlive.isDesired(this)) {
+            scope.launch { KeepAlive.reviveIfNeeded(this@ProxyTileService, "шторка") }
+        }
     }
 
     override fun onStopListening() {

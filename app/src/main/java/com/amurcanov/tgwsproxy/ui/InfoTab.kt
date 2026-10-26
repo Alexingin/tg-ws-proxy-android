@@ -1132,7 +1132,23 @@ private fun buildSupportReport(
         append(context.getString(R.string.report_port, port.trim().ifBlank { "1443" }))
         append(cfDomainLine)
         appendLine()
+        appendLine(
+            "Работа в фоне: " + if (com.amurcanov.tgwsproxy.KeepAlive.isIgnoringBatteryOptimizations(context))
+                "разрешена" else "ограничена оптимизацией батареи"
+        )
         appendLine()
+        val exits = com.amurcanov.tgwsproxy.Diagnostics.recentExits(context)
+        if (exits.isNotEmpty()) {
+            appendLine("Последние завершения процесса:")
+            exits.forEach { appendLine("- $it") }
+            appendLine()
+        }
+        val crashes = com.amurcanov.tgwsproxy.Diagnostics.lastCrashes(context)
+        if (crashes.isNotEmpty()) {
+            appendLine("Последние сбои:")
+            crashes.forEach { appendLine("- $it") }
+            appendLine()
+        }
         appendLine(context.getString(R.string.report_recent_errors))
         append(errorsBlock)
     }.trim()

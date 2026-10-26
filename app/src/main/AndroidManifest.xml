@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Исключение из оптимизации батареи только для этого приложения (системный запрос) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Точный будильник автоподъёма раз в 15 минут -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <queries>
         <package android:name="org.telegram.messenger" />
@@ -31,6 +36,7 @@
     </queries>
 
     <application
+        android:name="com.amurcanov.tgwsproxy.ProxyApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -81,6 +87,11 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!-- Автоподъём: будильник проверяет, что прокси работает, и поднимает его -->
+        <receiver
+            android:name="com.amurcanov.tgwsproxy.KeepAliveReceiver"
+            android:exported="false" />
 
         <!-- Restart proxy after device reboot if it was running -->
         <receiver

@@ -52,6 +52,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.amurcanov.tgwsproxy.ui.AppUpdateDialog
 import com.amurcanov.tgwsproxy.ui.ConnectionTab
 import com.amurcanov.tgwsproxy.ui.FloatingToolbar
@@ -96,8 +98,31 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) {}
 
+    override fun onResume() {
+        super.onResume()
+        // Приложение открыли: покажем, почему умер прошлый процесс, и поднимем
+        // прокси, если он должен работать, но был убит системой.
+        lifecycleScope.launch {
+            Diagnostics.reportNewExits(this@MainActivity)
+            KeepAlive.reviveIfNeeded(this@MainActivity, "приложение открыто")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // После первого успешного запуска прокси один раз предлагаем исключить
+        // приложение из оптимизации батареи — это защищает его от выгрузки
+        // прошивкой и разрешает автоподъём из фона.
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                ProxyService.isRunning.collect { running ->
+                    if (running && KeepAlive.shouldAskBatteryOnce(this@MainActivity)) {
+                        KeepAlive.openBatterySettings(this@MainActivity)
+                    }
+                }
+            }
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -603,6 +628,8 @@ private fun AppBackdrop(modifier: Modifier = Modifier) {
  * - Array-backed list with cap of 50: avoids growing/shrinking allocations
  * - Duplicate merging: last-entry count increment done in-place conceptually
  */
+private val LOOPBACK_PORT_REGEX = Regex("\\[127\\.0\\.0\\.1:\\d+\\]")
+
 object LogManager {
     val logs = MutableStateFlow<List<LogEntry>>(emptyList())
     private var job: Job? = null
@@ -763,6 +790,9 @@ object LogManager {
         // Remove emojis and stickers
         val emojiRegex = Regex("[\\x{1F300}-\\x{1F5FF}\\x{1F900}-\\x{1F9FF}\\x{1F600}-\\x{1F64F}\\x{1F680}-\\x{1F6FF}\\x{2600}-\\x{26FF}\\x{2700}-\\x{27BF}\\x{1F1E6}-\\x{1F1FF}\\x{1F191}-\\x{1F251}\\x{1F004}\\x{1F0CF}\\x{1F170}-\\x{1F171}\\x{1F17E}-\\x{1F17F}\\x{1F18E}\\x{3030}\\x{2B50}\\x{2B55}\\x{2934}-\\x{2935}\\x{2B05}-\\x{2B07}\\x{2B1B}-\\x{2B1C}\\x{3297}\\x{3299}\\x{303D}\\x{00A9}\\x{00AE}\\x{2122}\\x{23F3}\\x{24C2}\\x{23E9}-\\x{23EF}\\x{25B6}\\x{23F8}-\\x{23FA}⚠✅❌⚡🔥🔄🔗]")
         message = message.replace(emojiRegex, "").trim()
+        // Порт клиента меняется на каждом подключении — без него одинаковые
+        // строки («bad handshake» и т.п.) склеиваются в одну со счётчиком.
+        message = message.replace(LOOPBACK_PORT_REGEX, "[127.0.0.1]")
 
         val isEssential = listOf(
             "pool", "key:", "started", "address:", "error", "failed", "blocked",

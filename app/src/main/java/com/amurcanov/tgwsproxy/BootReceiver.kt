@@ -28,6 +28,8 @@ class BootReceiver : BroadcastReceiver() {
                 val settingsStore = SettingsStore(appContext)
                 if (!settingsStore.autoStartOnBoot.first()) {
                     Log.i(TAG, "Boot completed, autostart disabled")
+                    // Автозапуск выключен — не поднимаем прокси сами после перезагрузки.
+                    KeepAlive.onUserStopped(appContext)
                     return@launch
                 }
 

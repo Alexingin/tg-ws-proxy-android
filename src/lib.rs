@@ -47,6 +47,41 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Паника внутри движка больше не роняет приложение (panic = "unwind":
+/// tokio завершает только задачу, в которой она случилась), но её нужно видеть.
+/// Пишем в лог и в файл last_panic.txt в cache-каталоге — приложение покажет
+/// его при следующем запуске.
+fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "?".to_string());
+            let payload = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic".to_string());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("?")
+                .to_string();
+            let line = format!("PANIC [{}] {} at {}", thread, payload, location);
+            lerror!("{}", line);
+            let dir = CFPROXY.read().cache_dir.clone();
+            if !dir.is_empty() {
+                let path = std::path::Path::new(&dir).join("last_panic.txt");
+                let _ = std::fs::write(&path, format!("{}\n", line));
+            }
+            prev(info);
+        }));
+    });
+}
+
 fn cstr_to_string(p: *const c_char) -> String {
     if p.is_null() {
         return String::new();
@@ -82,6 +117,7 @@ pub unsafe extern "C" fn StartProxy(
     let is_verbose = verbose != 0;
 
     init_logging(is_verbose);
+    install_panic_hook();
     cfproxy::clear_cfproxy_429_cooldowns();
 
     if secret_str.len() == 32 {
@@ -232,6 +268,20 @@ pub extern "C" fn GetTrafficBytes() -> i64 {
     STATS.bytes_up.load(Ordering::Relaxed) + STATS.bytes_down.load(Ordering::Relaxed)
 }
 
+/// Число отклонённых рукопожатий (неверный секрет / протокол) с запуска.
+#[unsafe(no_mangle)]
+pub extern "C" fn GetBadHandshakes() -> i64 {
+    STATS.connections_bad.load(Ordering::Relaxed)
+}
+
+/// Число успешно установленных маршрутов (WS, CF, TCP, H2) с запуска.
+#[unsafe(no_mangle)]
+pub extern "C" fn GetGoodConnections() -> i64 {
+    STATS.connections_ws.load(Ordering::Relaxed)
+        + STATS.connections_cfproxy.load(Ordering::Relaxed)
+        + STATS.connections_tcp_fallback.load(Ordering::Relaxed)
+}
+
 /// Число активных клиентских соединений.
 #[unsafe(no_mangle)]
 pub extern "C" fn GetActiveConnections() -> c_int {
@@ -373,5 +423,36 @@ pub unsafe extern "C" fn FreeString(p: *mut c_char) {
     }
     unsafe {
         let _ = CString::from_raw(p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_in_task_is_contained_and_recorded() {
+        let dir = std::env::temp_dir().join(format!("tgws-panic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        CFPROXY.write().cache_dir = dir.to_string_lossy().to_string();
+        install_panic_hook();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let res = rt.block_on(async {
+            tokio::spawn(async {
+                let v: Vec<u8> = Vec::new();
+                let _ = v[3]; // паника внутри задачи
+            })
+            .await
+        });
+        assert!(res.unwrap_err().is_panic());
+        // Рантайм жив и продолжает работать.
+        assert_eq!(rt.block_on(async { 2 + 2 }), 4);
+        let text = std::fs::read_to_string(dir.join("last_panic.txt")).unwrap();
+        assert!(text.contains("PANIC"), "{}", text);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

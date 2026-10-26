@@ -13,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -94,6 +96,13 @@ fun SettingsTab(settingsStore: SettingsStore) {
     val autoStartOnBoot by settingsStore.autoStartOnBoot.collectAsStateWithLifecycle(initialValue = false)
     val keepAwake by settingsStore.keepAwake.collectAsStateWithLifecycle(initialValue = true)
     val cfH2Media by settingsStore.cfH2Media.collectAsStateWithLifecycle(initialValue = false)
+    val appContext = androidx.compose.ui.platform.LocalContext.current
+    var backgroundAllowed by remember {
+        mutableStateOf(com.amurcanov.tgwsproxy.KeepAlive.isIgnoringBatteryOptimizations(appContext))
+    }
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        backgroundAllowed = com.amurcanov.tgwsproxy.KeepAlive.isIgnoringBatteryOptimizations(appContext)
+    }
     val savedSecretKey by settingsStore.secretKey.collectAsStateWithLifecycle(initialValue = "LOADING")
 
     if (!isReady) {
@@ -520,6 +529,47 @@ fun SettingsTab(settingsStore: SettingsStore) {
                         scope.launch { settingsStore.saveCfH2Media(enabled) }
                     }
                 )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            // Работа в фоне: исключение из оптимизации батареи только для прокси.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { com.amurcanov.tgwsproxy.KeepAlive.openBatterySettings(appContext) }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.BatteryStd, null,
+                        tint = if (backgroundAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
+                        Text(
+                            stringResource(com.amurcanov.tgwsproxy.R.string.background_work),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            stringResource(
+                                if (backgroundAllowed) com.amurcanov.tgwsproxy.R.string.background_work_allowed
+                                else com.amurcanov.tgwsproxy.R.string.background_work_restricted
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (backgroundAllowed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
         }
 

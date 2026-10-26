@@ -25,6 +25,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Тесты движка (кадрирование MTProto, повторы и HTTP/2-мост на локальном
+      # сервере). Если что-то сломано — сборка остановится здесь.
+      - name: Engine tests
+        run: cargo test --lib --locked
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 

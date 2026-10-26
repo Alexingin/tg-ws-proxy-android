@@ -42,7 +42,8 @@ log = "0.4"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# unwind: паника в задаче tokio завершает только эту задачу, а не всё приложение
+panic = "unwind"
 strip = true
 [dev-dependencies]
 # Только для тестов cf_h2: локальный HTTP/2-сервер с самоподписанным сертификатом.

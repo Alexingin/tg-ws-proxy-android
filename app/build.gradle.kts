@@ -14,7 +14,7 @@ android {
         // считает APK подменённым и блокирует. Пространство имён кода (namespace) прежнее.
         applicationId = "io.github.alexingin.tgwsproxy"
         targetSdk = 35
-        versionCode = 130
+        versionCode = 131
         // Для тестовых сборок CI добавляет суффикс: -PversionSuffix=-dev.42
         versionName = "1.3.0" + (project.findProperty("versionSuffix")?.toString() ?: "")
 
