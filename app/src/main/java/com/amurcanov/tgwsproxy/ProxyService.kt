@@ -78,6 +78,7 @@ class ProxyService : Service() {
         const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
         const val EXTRA_VERBOSE = "EXTRA_VERBOSE"
         const val EXTRA_CF_H2_MEDIA = "EXTRA_CF_H2_MEDIA"
+        const val EXTRA_AUTO_REVIVE = "EXTRA_AUTO_REVIVE"
         
         private const val NOTIFICATION_ID = 101
         private const val CHANNEL_ID = "TG_WS_Proxy_Service_v4"
@@ -131,7 +132,13 @@ class ProxyService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                LogManager.clearLogs()
+                val reviveReason = intent.getStringExtra(EXTRA_AUTO_REVIVE)
+                if (reviveReason == null) {
+                    LogManager.clearLogs()
+                } else {
+                    // Автоподъём: логи не чистим — в них причина остановки.
+                    Log.w("TgWsProxy", "[WARN] Автоподъём: прокси запущен заново ($reviveReason)")
+                }
                 val bindIp = intent.getStringExtra(EXTRA_BIND_IP) ?: "127.0.0.1"
                 val port = intent.getIntExtra(EXTRA_PORT, 1443)
                 val ips = intent.getStringExtra(EXTRA_IPS) ?: ""
@@ -236,6 +243,7 @@ class ProxyService : Service() {
                 NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, cfDomain)
                 NativeProxy.setCfH2Media(lastCfH2Media)
+                NativeProxy.setCellularNetwork(isOnCellular())
                 // Подробные (debug) логи движка — только если включены в фильтре логов:
                 // каждая строка уходит в logcat и стоит CPU.
                 val result = NativeProxy.startProxy(bindIp, port, ips, secretKey, if (lastVerbose) 1 else 0)
@@ -509,6 +517,19 @@ class ProxyService : Service() {
         }
     }
 
+    private fun isOnCellular(): Boolean = try {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            cm.getNetworkCapabilities(cm.activeNetwork)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        } else {
+            @Suppress("DEPRECATION")
+            cm.activeNetworkInfo?.type == ConnectivityManager.TYPE_MOBILE
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     private fun isScreenOn(): Boolean = try {
         (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
     } catch (_: Exception) {
@@ -744,6 +765,15 @@ class ProxyService : Service() {
                 // Первый вызов сразу после регистрации — это текущая сеть, не смена.
                 if (prev != null && prev != network) {
                     scheduleNetworkReset("network switched")
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                // HTTP/2 для медиа пробуется только не на мобильном интернете.
+                val cellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                try {
+                    NativeProxy.setCellularNetwork(cellular)
+                } catch (_: Throwable) {
                 }
             }
 

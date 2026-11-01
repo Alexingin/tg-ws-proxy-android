@@ -576,8 +576,31 @@ pub struct CfWorkerEntry {
 pub struct CfWorkerPool {
     idle: Mutex<HashMap<i32, VecDeque<CfWorkerEntry>>>,
     refilling: Mutex<HashSet<i32>>,
+    // Оригинал (#1517): ротация протухших и backoff неудачных пополнений.
+    rotating: Mutex<HashSet<i32>>,
+    refill_failures: Mutex<HashMap<i32, (u32, f64)>>,
     exhausted_until: Mutex<HashMap<String, f64>>,
     cancel_token: CancellationToken,
+}
+
+const CF_WORKER_POOL_CHECK_INTERVAL: f64 = 5.0;
+const CF_WORKER_REFILL_BACKOFF_INITIAL: f64 = 1.0;
+// В оригинале 3600с; на телефоне, как и для WS-пула, держим не больше минуты.
+const CF_WORKER_REFILL_BACKOFF_MAX: f64 = 60.0;
+
+fn cf_worker_target_size() -> usize {
+    CF_WORKER_PER_DC_LIMIT.min(POOL_SIZE.load(Ordering::Relaxed).max(0) as usize)
+}
+
+fn spawn_cf_rotate_task(
+    pool: Arc<CfWorkerPool>,
+    dc: i32,
+    fallback_dst: String,
+    worker_domains: Vec<String>,
+) {
+    tokio::spawn(async move {
+        pool.rotate(dc, fallback_dst, worker_domains).await;
+    });
 }
 
 impl CfWorkerPool {
@@ -585,6 +608,8 @@ impl CfWorkerPool {
         CfWorkerPool {
             idle: Mutex::new(HashMap::new()),
             refilling: Mutex::new(HashSet::new()),
+            rotating: Mutex::new(HashSet::new()),
+            refill_failures: Mutex::new(HashMap::new()),
             exhausted_until: Mutex::new(HashMap::new()),
             cancel_token,
         }
@@ -596,6 +621,9 @@ impl CfWorkerPool {
         fallback_dst: String,
         worker_domains: Vec<String>,
     ) -> Option<(RawWebSocket, String)> {
+        if POOL_SIZE.load(Ordering::Relaxed) <= 0 || worker_domains.is_empty() {
+            return None;
+        }
         let now = now_monotonic();
         let entry = {
             let mut map = self.idle.lock().await;
@@ -628,6 +656,8 @@ impl CfWorkerPool {
             }
             None => {
                 STATS.cf_pool_misses.fetch_add(1, Ordering::Relaxed);
+                // Оригинал (#1517): пополняем и при промахе, а не только после попадания.
+                self.schedule_refill(dc, fallback_dst, worker_domains).await;
                 None
             }
         }
@@ -642,10 +672,103 @@ impl CfWorkerPool {
         fallback_dst: String,
         worker_domains: Vec<String>,
     ) {
-        if pool_is_idle() {
+        if pool_is_idle() || POOL_SIZE.load(Ordering::Relaxed) <= 0 || worker_domains.is_empty() {
             return;
         }
+        self.schedule_rotation(dc, fallback_dst.clone(), worker_domains.clone())
+            .await;
+        if let Some((_, after)) = self.refill_failures.lock().await.get(&dc) {
+            if now_monotonic() < *after {
+                return;
+            }
+        }
         self.refill_now(dc, fallback_dst, worker_domains).await;
+    }
+
+    async fn schedule_rotation(
+        self: &Arc<Self>,
+        dc: i32,
+        fallback_dst: String,
+        worker_domains: Vec<String>,
+    ) {
+        if !self.rotating.lock().await.insert(dc) {
+            return;
+        }
+        spawn_cf_rotate_task(self.clone(), dc, fallback_dst, worker_domains);
+    }
+
+    /// Порт _CfWorkerPool._rotate: выкидывает протухшие и дотягивает пул.
+    /// Как и WS-пул, засыпает, когда Telegram давно не подключался.
+    async fn rotate(self: Arc<Self>, dc: i32, fallback_dst: String, worker_domains: Vec<String>) {
+        loop {
+            if self.cancel_token.is_cancelled() || POOL_SIZE.load(Ordering::Relaxed) <= 0 {
+                break;
+            }
+            let now = now_monotonic();
+            let (ready, min_expires) = {
+                let mut map = self.idle.lock().await;
+                let bucket = map.entry(dc).or_insert_with(VecDeque::new);
+                let mut keep = VecDeque::with_capacity(bucket.len());
+                let mut expired = 0usize;
+                while let Some(e) = bucket.pop_front() {
+                    if now - e.created >= CF_WORKER_POOL_MAX_AGE || e.ws.is_stale() {
+                        expired += 1;
+                        let ws = e.ws;
+                        tokio::spawn(async move {
+                            ws.close().await;
+                        });
+                    } else {
+                        keep.push_back(e);
+                    }
+                }
+                let min_expires = keep
+                    .iter()
+                    .map(|e| e.created + CF_WORKER_POOL_MAX_AGE)
+                    .fold(f64::INFINITY, f64::min);
+                *bucket = keep;
+                if expired > 0 {
+                    ldebug!(
+                        "CF worker pool rotated DC{}: {} stale, {} ready",
+                        dc,
+                        expired,
+                        bucket.len()
+                    );
+                }
+                (bucket.len(), min_expires)
+            };
+            let idle = pool_is_idle();
+            if idle && ready == 0 {
+                break;
+            }
+            if !idle && ready < cf_worker_target_size() {
+                let backoff_over = self
+                    .refill_failures
+                    .lock()
+                    .await
+                    .get(&dc)
+                    .map(|(_, after)| now >= *after)
+                    .unwrap_or(true);
+                if backoff_over {
+                    self.refill_now(dc, fallback_dst.clone(), worker_domains.clone())
+                        .await;
+                }
+            }
+            let mut wake_at = now + CF_WORKER_POOL_CHECK_INTERVAL;
+            if min_expires.is_finite() {
+                wake_at = wake_at.min(min_expires);
+            }
+            if let Some((_, after)) = self.refill_failures.lock().await.get(&dc) {
+                if *after > now {
+                    wake_at = wake_at.min(*after);
+                }
+            }
+            let sleep_dur = (wake_at - now_monotonic()).max(0.05);
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs_f64(sleep_dur)) => {}
+            }
+        }
+        self.rotating.lock().await.remove(&dc);
     }
 
     pub async fn refill_now(
@@ -672,7 +795,7 @@ impl CfWorkerPool {
             {
                 let map = pool.idle.lock().await;
                 let cur = map.get(&dc).map(|b| b.len()).unwrap_or(0);
-                if cur >= CF_WORKER_PER_DC_LIMIT.min(POOL_SIZE.load(Ordering::Relaxed).max(0) as usize) {
+                if cur >= cf_worker_target_size() {
                     pool.refilling.lock().await.remove(&dc);
                     return;
                 }
@@ -698,6 +821,16 @@ impl CfWorkerPool {
                         worker_domain: domain,
                     });
                 ldebug!("CF worker pool refilled DC{}: ready", dc);
+                drop(map);
+                pool.refill_failures.lock().await.remove(&dc);
+            } else if !cancel.is_cancelled() {
+                // Оригинал (#1517): экспоненциальный backoff пополнения.
+                let mut f = pool.refill_failures.lock().await;
+                let count = f.get(&dc).map(|(c, _)| *c).unwrap_or(0) + 1;
+                let delay = (CF_WORKER_REFILL_BACKOFF_INITIAL * 2f64.powi((count - 1).min(12) as i32))
+                    .min(CF_WORKER_REFILL_BACKOFF_MAX);
+                f.insert(dc, (count, now_monotonic() + delay));
+                linfo!("CF worker pool refill failed for DC{}, retry in {:.0}s", dc, delay);
             }
             pool.refilling.lock().await.remove(&dc);
         });
@@ -718,6 +851,11 @@ impl CfWorkerPool {
             {
                 Ok(ws) => return Some((ws, worker_domain)),
                 Err(exc) => {
+                    // Оригинал (dcd9535).
+                    ldebug!(
+                        "CF worker pool connect DC{} via {} for {} failed: {}",
+                        dc, worker_domain, fallback_dst, exc.compact()
+                    );
                     self.report_failure(&worker_domain, &exc).await;
                 }
             }
@@ -759,7 +897,7 @@ impl CfWorkerPool {
 
     pub async fn warmup(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
         let worker_domains = CF_WORKER_DOMAINS.read().clone();
-        if worker_domains.is_empty() {
+        if worker_domains.is_empty() || POOL_SIZE.load(Ordering::Relaxed) <= 0 {
             return;
         }
         // CF worker греем только для DC, которых НЕТ в прямых редиректах.
@@ -793,6 +931,8 @@ impl CfWorkerPool {
         self.close_all().await;
         self.idle.lock().await.clear();
         self.refilling.lock().await.clear();
+        self.rotating.lock().await.clear();
+        self.refill_failures.lock().await.clear();
         self.exhausted_until.lock().await.clear();
     }
 }
@@ -1878,6 +2018,22 @@ async fn serve_core<R, W>(
     if !valid_proto(proto) {
         STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
         lwarn!("[{}] bad handshake (wrong secret or proto)", label);
+        // Оригинал (#1517): дочитываем немного данных (до 64 КБ / 10 с), а не
+        // рвём соединение сразу. Telegram со старым ключом тогда не долбит
+        // прокси новыми подключениями в бесконечном цикле.
+        let _ = tokio::time::timeout(BAD_HANDSHAKE_DRAIN_TIMEOUT, async {
+            let mut buf = [0u8; 4096];
+            let mut remaining = BAD_HANDSHAKE_DRAIN_LIMIT;
+            while remaining > 0 {
+                let n = match conn_read.read(&mut buf[..remaining.min(4096)]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                remaining -= n;
+            }
+        })
+        .await;
+        let _ = conn_write.shutdown().await;
         return;
     }
 

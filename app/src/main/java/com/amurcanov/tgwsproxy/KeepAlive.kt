@@ -101,7 +101,11 @@ object KeepAlive {
         Log.w(TAG, "[WARN] Прокси должен работать, но процесс был остановлен — перезапуск ($reason)")
         return try {
             withContext(Dispatchers.Main) {
-                ProxyController.startFromSavedSettings(app, showInvalidPortToast = false)
+                ProxyController.startFromSavedSettings(
+                    app,
+                    showInvalidPortToast = false,
+                    autoReviveReason = reason
+                )
             }
         } catch (e: Exception) {
             // Android 12+ может запретить запуск foreground-сервиса из фона,

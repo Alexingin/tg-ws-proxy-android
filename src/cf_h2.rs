@@ -62,8 +62,15 @@ const SETUP_BACKOFF_MAX: f64 = 600.0;
 /// Включено пользователем (настройка «Медиа через CF по HTTP/2»).
 pub static CF_H2_MEDIA: AtomicBool = AtomicBool::new(false);
 
+/// Телефон сейчас на мобильном интернете (сообщает Android).
+pub static ON_CELLULAR: AtomicBool = AtomicBool::new(false);
+
+/// HTTP/2 пробуем только не на мобильном интернете: там порт 443 до
+/// Cloudflare обычно режется, и каждая попытка лишь задерживала медиа.
 pub fn h2_enabled() -> bool {
-    CF_H2_MEDIA.load(Ordering::Relaxed) && CFPROXY_ENABLED.load(Ordering::Relaxed)
+    CF_H2_MEDIA.load(Ordering::Relaxed)
+        && CFPROXY_ENABLED.load(Ordering::Relaxed)
+        && !ON_CELLULAR.load(Ordering::Relaxed)
 }
 
 // --- ошибки ----------------------------------------------------------------

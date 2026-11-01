@@ -252,6 +252,12 @@ pub extern "C" fn SetCfH2Media(v: c_int) {
     cf_h2::CF_H2_MEDIA.store(v != 0, Ordering::Relaxed);
 }
 
+/// Android сообщает тип сети: 1 — мобильный интернет, 0 — Wi-Fi/другое.
+#[unsafe(no_mangle)]
+pub extern "C" fn SetCellularNetwork(v: c_int) {
+    cf_h2::ON_CELLULAR.store(v != 0, Ordering::Relaxed);
+}
+
 /// Сколько секунд не было новых подключений Telegram (-1, если прокси не запущен).
 /// Android по этому решает, держать ли wakelock.
 #[unsafe(no_mangle)]

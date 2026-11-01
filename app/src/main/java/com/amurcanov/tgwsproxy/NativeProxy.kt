@@ -16,6 +16,7 @@ interface ProxyLibrary : Library {
     fun GetActiveConnections(): Int
     fun GetTrafficBytes(): Long
     fun SetCfH2Media(v: Int)
+    fun SetCellularNetwork(v: Int)
     fun GetBadHandshakes(): Long
     fun GetGoodConnections(): Long
     fun SetPoolSize(size: Int)
@@ -54,6 +55,8 @@ object NativeProxy {
     fun trafficBytes(): Long = ProxyLibrary.INSTANCE.GetTrafficBytes()
 
     fun setCfH2Media(enabled: Boolean) = ProxyLibrary.INSTANCE.SetCfH2Media(if (enabled) 1 else 0)
+
+    fun setCellularNetwork(cellular: Boolean) = ProxyLibrary.INSTANCE.SetCellularNetwork(if (cellular) 1 else 0)
 
     fun badHandshakes(): Long = ProxyLibrary.INSTANCE.GetBadHandshakes()
 

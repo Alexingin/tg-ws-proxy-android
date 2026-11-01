@@ -10,7 +10,8 @@ object ProxyController {
 
     suspend fun startFromSavedSettings(
         context: Context,
-        showInvalidPortToast: Boolean = false
+        showInvalidPortToast: Boolean = false,
+        autoReviveReason: String? = null
     ): Boolean {
         val settingsStore = SettingsStore(context)
         settingsStore.migrateLegacyDefaults()
@@ -74,6 +75,7 @@ object ProxyController {
                 putExtra(ProxyService.EXTRA_KEEP_AWAKE, keepAwake)
                 putExtra(ProxyService.EXTRA_VERBOSE, verbose)
                 putExtra(ProxyService.EXTRA_CF_H2_MEDIA, cfH2Media)
+                autoReviveReason?.let { putExtra(ProxyService.EXTRA_AUTO_REVIVE, it) }
             }
         )
         ProxyTileService.requestSync(context)

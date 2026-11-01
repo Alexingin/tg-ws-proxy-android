@@ -70,7 +70,14 @@ object Diagnostics {
     @RequiresApi(Build.VERSION_CODES.R)
     private fun describe(e: ApplicationExitInfo): String {
         val desc = e.description?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""
-        return "${timeFormat.format(Date(e.timestamp))}: ${reasonName(e.reason)}$desc " +
+        val raw = e.description.orEmpty().lowercase(Locale.US)
+        // «o-kill» / «oplus» — собственный менеджер процессов OnePlus/OPPO/realme.
+        val reason = if ("o-kill" in raw || "oplus" in raw || "athena" in raw) {
+            "выгружен прошивкой OnePlus/OPPO"
+        } else {
+            reasonName(e.reason)
+        }
+        return "${timeFormat.format(Date(e.timestamp))}: $reason$desc " +
             "(status=${e.status}, importance=${e.importance})"
     }
 

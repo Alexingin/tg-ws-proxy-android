@@ -368,14 +368,15 @@ impl RawWebSocket {
     }
 
     pub async fn close(&self) {
-        if self.closed.swap(true, Ordering::Relaxed) {
-            return;
+        // Оригинал (#1517): close-фрейм — только если ещё не закрыто, но
+        // транспорт закрываем всегда. Раньше соединение, помеченное закрытым
+        // после ошибки чтения/записи, так и оставалось открытым.
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            let frame = build_frame(OP_CLOSE, &[], true);
+            let _ = self.write_frame(&frame, WS_CONTROL_TIMEOUT).await;
         }
-        // Best-effort close frame + shutdown транспорта.
-        let frame = build_frame(OP_CLOSE, &[], true);
-        let _ = self.write_frame(&frame, WS_CONTROL_TIMEOUT).await;
         let mut writer = self.writer.lock().await;
-        let _ = shutdown_match(&mut writer).await;
+        let _ = tokio::time::timeout(WS_CONTROL_TIMEOUT, shutdown_match(&mut writer)).await;
     }
 
     // recv с дедлайном чтения (для bridge).

@@ -57,6 +57,10 @@ pub const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(120);
 // Следующее подключение Telegram сразу будит пул.
 pub const WS_POOL_IDLE_AFTER: f64 = 120.0;
 
+// proxy/tg_ws_proxy.py (#1517): BAD_HANDSHAKE_DRAIN_TIMEOUT / _LIMIT
+pub const BAD_HANDSHAKE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+pub const BAD_HANDSHAKE_DRAIN_LIMIT: usize = 64 * 1024;
+
 // proxy/bridge.py: TCP_BACKOFF_INITIAL / TCP_BACKOFF_MAX
 pub const TCP_BACKOFF_INITIAL: f64 = 30.0;
 pub const TCP_BACKOFF_MAX: f64 = 3600.0;

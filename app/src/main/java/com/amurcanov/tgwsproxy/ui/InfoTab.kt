@@ -103,6 +103,7 @@ private const val AndroidForkRepoUrl = com.amurcanov.tgwsproxy.PROJECT_REPO_URL
 private const val AndroidForkIssuesUrl = "${com.amurcanov.tgwsproxy.PROJECT_REPO_URL}/issues"
 // Автор первого Android-порта, на котором основан проект.
 private const val DeveloperProfileUrl = "https://github.com/amurcanov"
+private const val MaintainerProfileUrl = "https://github.com/Alexingin"
 private const val OriginalProjectUrl = "https://github.com/Flowseal/tg-ws-proxy"
 private const val ProxyReferenceUrl = "https://github.com/Flowseal/tg-ws-proxy/issues/389"
 private const val AndroidAppDonateUrl = ""
@@ -205,7 +206,9 @@ fun InfoTab(settingsStore: SettingsStore) {
             )
         }
 
-            InfoHeroCard(onSupportClick = { showDonateDialog = true })
+            // Донатов автору порта больше нет (проект архивирован) — кнопка ведёт
+            // на страницу проекта, где его можно поддержать звездой.
+            InfoHeroCard(onSupportClick = { openUrlInBrowser(context, AndroidForkRepoUrl) })
 
             ExpandableSectionCard(
             title = stringResource(R.string.actions),
@@ -325,7 +328,7 @@ fun InfoTab(settingsStore: SettingsStore) {
 
         ExpandableSectionCard(
             title = stringResource(R.string.about_project),
-            itemCount = stringResource(R.string.links_count, 4),
+            itemCount = stringResource(R.string.links_count, 5),
             expanded = projectExpanded,
             onToggle = { projectExpanded = !projectExpanded },
             icon = {
@@ -337,6 +340,20 @@ fun InfoTab(settingsStore: SettingsStore) {
                 )
             }
         ) {
+            ProjectLinkRow(
+                title = stringResource(R.string.maintainer),
+                subtitle = stringResource(R.string.maintainer_subtitle),
+                onClick = { openUrlInBrowser(context, MaintainerProfileUrl) },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            )
+
             ProjectLinkRow(
                 title = stringResource(R.string.android_author),
                 subtitle = stringResource(R.string.android_author_subtitle),
@@ -500,6 +517,16 @@ fun InfoTab(settingsStore: SettingsStore) {
                         HelpSection(
                             title = stringResource(R.string.autostart),
                             text = stringResource(R.string.help_autostart_text)
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                        HelpSection(
+                            title = stringResource(R.string.help_background_title),
+                            text = stringResource(R.string.help_background_text)
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                        HelpSection(
+                            title = stringResource(R.string.help_h2_title),
+                            text = stringResource(R.string.help_h2_text)
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                         HelpSection(
