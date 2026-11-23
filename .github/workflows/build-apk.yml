@@ -99,7 +99,7 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
         run: >
-          gradle :app:assembleArm64Release :app:assembleUniversalRelease
+          gradle :app:assembleArm64Release :app:assembleUniversalRelease :app:assembleArm64Lab
           -PversionSuffix="${{ steps.ver.outputs.suffix }}"
           --no-daemon --stacktrace
 
@@ -109,12 +109,21 @@ jobs:
           v="${{ steps.ver.outputs.version }}"
           cp app/build/outputs/apk/arm64/release/*.apk     "dist/tg-ws-proxy-$v-arm64.apk"
           cp app/build/outputs/apk/universal/release/*.apk "dist/tg-ws-proxy-$v-universal.apk"
-          ls -la dist
+          # Лаборатория соединений — отдельно: в релиз не попадает, только в Artifacts.
+          mkdir -p lab
+          cp app/build/outputs/apk/arm64/lab/*.apk "lab/tg-ws-proxy-lab-$v-arm64.apk"
+          ls -la dist lab
 
       - uses: actions/upload-artifact@v6
         with:
           name: tg-ws-proxy-${{ steps.ver.outputs.version }}
           path: dist/*.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: tg-ws-proxy-lab-${{ steps.ver.outputs.version }}
+          path: lab/*.apk
           if-no-files-found: error
 
       - name: Publish release
