@@ -96,6 +96,11 @@ static TLS_CONFIG: Lazy<Arc<ClientConfig>> = Lazy::new(|| {
     Arc::new(cfg)
 });
 
+/// TLS-конфиг движка для сторонних проверок (лаборатория соединений).
+pub fn tls_client_config() -> Arc<ClientConfig> {
+    TLS_CONFIG.clone()
+}
+
 // Отдельный контекст для fronting (check_hostname=False в оригинале).
 // На практике оба контекста NoVerify; разделение сохранено для паритета.
 static TLS_CONFIG_FRONTING: Lazy<Arc<ClientConfig>> = Lazy::new(|| TLS_CONFIG.clone());

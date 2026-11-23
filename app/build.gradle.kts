@@ -110,6 +110,14 @@ android {
                 signingConfigs.getByName("debug")
             }
         }
+        // «Лаборатория соединений»: отдельный пакет .lab, ставится рядом с
+        // основным приложением. Код экрана — в app/src/lab.
+        create("lab") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".lab"
+            versionNameSuffix = "-lab"
+            matchingFallbacks += listOf("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

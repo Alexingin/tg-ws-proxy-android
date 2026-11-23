@@ -18,6 +18,8 @@
 # ─── Our proxy library interface and NativeProxy object ───
 -keep class com.amurcanov.tgwsproxy.NativeProxy { *; }
 -keep interface com.amurcanov.tgwsproxy.ProxyLibrary { *; }
+# Лаборатория соединений (сборка lab)
+-keep interface com.amurcanov.tgwsproxy.lab.LabLibrary { *; }
 -keepclassmembers class * extends com.sun.jna.Library {
     <methods>;
 }

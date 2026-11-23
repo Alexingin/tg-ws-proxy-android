@@ -4,6 +4,7 @@ pub mod cfproxy;
 pub mod config;
 pub mod crypto;
 pub mod faketls;
+pub mod lab;
 pub mod proxy;
 pub mod ws;
 pub mod balancer;

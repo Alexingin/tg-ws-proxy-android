@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Сборка «Лаборатория» (пакет .lab): ставится рядом с основным приложением.
+     Вместо главного экрана прокси — экран проверок; плитка, автозапуск и
+     настройки плитки убраны, чтобы не путать с основным приложением. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name="com.amurcanov.tgwsproxy.MainActivity"
+            tools:node="merge">
+            <intent-filter tools:node="removeAll" />
+        </activity>
+
+        <activity
+            android:name="com.amurcanov.tgwsproxy.lab.LabActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize"
+            android:theme="@style/Theme.TGWSPROXY">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.amurcanov.tgwsproxy.ProxyTilePreferencesActivity"
+            tools:node="remove" />
+        <service
+            android:name="com.amurcanov.tgwsproxy.ProxyTileService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.amurcanov.tgwsproxy.BootReceiver"
+            tools:node="remove" />
+    </application>
+</manifest>
