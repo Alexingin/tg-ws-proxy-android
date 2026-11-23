@@ -104,7 +104,8 @@ pub static BUFFER_SIZE: AtomicI32 = AtomicI32::new(256 * 1024);
 pub static POOL_SIZE: AtomicI32 = AtomicI32::new(DEFAULT_POOL_SZ);
 pub static LOG_VERBOSE: AtomicBool = AtomicBool::new(false);
 // proxy/config.py::ProxyConfig — мобильные эквиваленты
-pub static DISABLE_SECURE: AtomicBool = AtomicBool::new(true);
+// Как в оригинале: по умолчанию TLS, при зависании — автоматически HTTP:80 (cf_tls.rs).
+pub static DISABLE_SECURE: AtomicBool = AtomicBool::new(false);
 pub static FORCE_TEST_DC: AtomicBool = AtomicBool::new(false);
 pub static PROXY_PROTOCOL: AtomicBool = AtomicBool::new(false);
 
@@ -381,6 +382,8 @@ pub struct Stats {
     pub pool_misses: AtomicI64,
     pub cf_pool_hits: AtomicI64,
     pub cf_pool_misses: AtomicI64,
+    /// Telegram ушёл, пока мы дозванивались (подключение отменено).
+    pub client_gone_during_setup: AtomicI64,
 }
 
 pub static STATS: Lazy<Stats> = Lazy::new(Stats::default);
@@ -477,6 +480,7 @@ impl Stats {
         self.pool_misses.store(0, Ordering::Relaxed);
         self.cf_pool_hits.store(0, Ordering::Relaxed);
         self.cf_pool_misses.store(0, Ordering::Relaxed);
+        self.client_gone_during_setup.store(0, Ordering::Relaxed);
     }
 }
 

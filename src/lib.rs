@@ -1,4 +1,5 @@
 pub mod cf_h2;
+pub mod cf_tls;
 pub mod cfproxy;
 pub mod config;
 pub mod crypto;
@@ -216,6 +217,7 @@ pub extern "C" fn StopProxy() -> c_int {
     cfproxy::clear_cfproxy_429_cooldowns();
     proxy::set_ws_pool_fronting_first(true);
     proxy::reset_tcp_backoff();
+    cf_tls::reset();
     cf_h2::CF_H2_POOL.reset();
 
     linfo!("StopProxy: exit");

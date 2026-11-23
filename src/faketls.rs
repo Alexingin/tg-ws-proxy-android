@@ -27,6 +27,58 @@ const MASKING_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const CCS_FRAME: [u8; 6] = [0x14, 0x03, 0x03, 0x00, 0x01, 0x01];
 
+// Оригинал (#1532): ClientHello проходит проверку времени TIMESTAMP_TOLERANCE
+// в обе стороны (+1 с на округление). Помним его random столько же — повтор
+// записанного ClientHello уходит на маскировочный сайт, а не получает ответ
+// прокси (иначе активный зонд понял бы, что это прокси).
+const REPLAY_WINDOW: Duration = Duration::from_secs((2 * TIMESTAMP_TOLERANCE + 1) as u64);
+// Храним только прошедшие HMAC — без секрета кэш не переполнить.
+const REPLAY_CACHE_SIZE: usize = 65536;
+
+struct ReplayCache {
+    order: std::collections::VecDeque<([u8; 32], std::time::Instant)>,
+    seen: std::collections::HashSet<[u8; 32]>,
+}
+
+impl ReplayCache {
+    fn first_seen(&mut self, client_random: &[u8; 32], window: Duration, size: usize) -> bool {
+        let now = std::time::Instant::now();
+        while let Some((r, exp)) = self.order.front() {
+            if *exp > now {
+                break;
+            }
+            self.seen.remove(r);
+            self.order.pop_front();
+        }
+        if self.seen.contains(client_random) {
+            return false;
+        }
+        if self.order.len() >= size {
+            if let Some((r, _)) = self.order.pop_front() {
+                self.seen.remove(&r);
+            }
+        }
+        self.seen.insert(*client_random);
+        self.order.push_back((*client_random, now + window));
+        true
+    }
+}
+
+// Один на процесс — переживает перезапуск прокси, как в оригинале.
+static REPLAY_CACHE: once_cell::sync::Lazy<parking_lot::Mutex<ReplayCache>> =
+    once_cell::sync::Lazy::new(|| {
+        parking_lot::Mutex::new(ReplayCache {
+            order: std::collections::VecDeque::new(),
+            seen: std::collections::HashSet::new(),
+        })
+    });
+
+fn replay_first_seen(client_random: &[u8; 32]) -> bool {
+    REPLAY_CACHE
+        .lock()
+        .first_seen(client_random, REPLAY_WINDOW, REPLAY_CACHE_SIZE)
+}
+
 const SH_RANDOM_OFF: usize = 11;
 const SH_SESSID_OFF: usize = 44;
 const SH_PUBKEY_OFF: usize = 89;
@@ -355,7 +407,9 @@ pub async fn server_handshake(
     client_hello.extend_from_slice(&tls_header);
     client_hello.extend_from_slice(&body);
 
-    match verify_client_hello(&client_hello, secret) {
+    let verified = verify_client_hello(&client_hello, secret);
+    let replayed = matches!(&verified, Some((r, _, _)) if !replay_first_seen(r));
+    match verified.filter(|_| !replayed) {
         Some((client_random, session_id, ts)) => {
             log_debug(&format!("[{}] Fake TLS handshake ok (ts={})", label, ts));
             let server_hello = build_server_hello(secret, &client_random, &session_id);
@@ -372,8 +426,9 @@ pub async fn server_handshake(
         }
         None => {
             log_debug(&format!(
-                "[{}] Fake TLS verify failed (size={} rec={}) -> masking",
+                "[{}] Fake TLS {} (size={} rec={}) -> masking",
                 label,
+                if replayed { "hello replayed" } else { "verify failed" },
                 client_hello.len(),
                 record_len
             ));
@@ -423,4 +478,37 @@ async fn proxy_to_masking_domain(conn: TcpStream, initial: Vec<u8>, domain: &str
     });
 
     let _ = tokio::join!(up, down);
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn replayed_hello_is_refused_until_window_ends() {
+        let mut c = ReplayCache {
+            order: Default::default(),
+            seen: Default::default(),
+        };
+        let r = [7u8; 32];
+        assert!(c.first_seen(&r, Duration::from_millis(30), 8));
+        assert!(!c.first_seen(&r, Duration::from_millis(30), 8));
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(c.first_seen(&r, Duration::from_millis(30), 8));
+    }
+
+    #[test]
+    fn cache_size_is_bounded() {
+        let mut c = ReplayCache {
+            order: Default::default(),
+            seen: Default::default(),
+        };
+        for i in 0..10u8 {
+            assert!(c.first_seen(&[i; 32], Duration::from_secs(60), 4));
+        }
+        assert_eq!(c.order.len(), 4);
+        assert_eq!(c.seen.len(), 4);
+        // Самый старый вытеснен — его снова можно принять.
+        assert!(c.first_seen(&[0u8; 32], Duration::from_secs(60), 4));
+    }
 }

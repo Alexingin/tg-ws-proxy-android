@@ -1392,6 +1392,10 @@ impl CfH2Pool {
         }
         let domains = BALANCER.read().get_domains_for_dc(dc);
         for base in domains {
+            // Оригинал 1.12.0: домен, где TLS недавно завис, H2 пропускает.
+            if crate::cf_tls::tls_in_cooldown(&crate::cfproxy::normalize_cf_domain(&base)) {
+                continue;
+            }
             let host = format!("kws{}.{}", dc, base);
             let lock = self
                 .st
