@@ -51,6 +51,18 @@ private fun generateRandomSecret(): String {
 }
 
 fun openTelegram(context: Context, url: String) {
+    // Сначала tg:// — открывает Telegram напрямую. Ссылка https://t.me на
+    // многих телефонах (Samsung) уходит в браузер, а t.me в РФ не открывается.
+    val tgUrl = toTgProxyUrl(url)
+    if (tgUrl != url) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(tgUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            return
+        } catch (_: ActivityNotFoundException) {
+        }
+    }
     try {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

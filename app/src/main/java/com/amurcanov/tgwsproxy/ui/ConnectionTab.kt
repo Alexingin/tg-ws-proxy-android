@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
@@ -441,6 +442,9 @@ private fun ModeChip(
 
 private val telegramPackages = listOf(
     "org.telegram.messenger",
+    // Telegram с сайта telegram.org (не из Google Play) и бета-версия
+    "org.telegram.messenger.web",
+    "org.telegram.messenger.beta",
     "com.radolyn.ayugram",
     "com.exteragram.messenger",
     "org.telegram.plus",
@@ -459,9 +463,19 @@ private val telegramPackages = listOf(
     "org.thunderdog.challegram"
 )
 
-private fun applyToTelegramPackages(context: Context, url: String) {
+/** https://t.me/proxy?... → tg://proxy?... — открывается сразу в клиенте, без браузера. */
+internal fun toTgProxyUrl(url: String): String {
+    val query = url.substringAfter('?', "")
+    return if (query.isEmpty()) url else "tg://proxy?$query"
+}
+
+/**
+ * Все установленные клиенты Telegram: известные пакеты и любые приложения,
+ * которые открывают ссылки tg:// (так находятся и форки, которых нет в списке).
+ */
+private fun findTelegramClients(context: Context, tgUrl: String): List<String> {
     val pm = context.packageManager
-    val availablePackages = telegramPackages.filter {
+    val known = telegramPackages.filter {
         try {
             pm.getPackageInfo(it, 0)
             true
@@ -469,14 +483,43 @@ private fun applyToTelegramPackages(context: Context, url: String) {
             false
         }
     }
+    val byScheme = try {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PackageManager.MATCH_ALL else 0
+        @Suppress("DEPRECATION")
+        pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse(tgUrl)), flags)
+            .mapNotNull { it.activityInfo?.packageName }
+    } catch (e: Exception) {
+        emptyList()
+    }
+    return (known + byScheme).distinct().filter { it != context.packageName }
+}
+
+/** Клиент не нашёлся: копируем ссылку и подсказываем, что делать. */
+private fun copyLinkFallback(context: Context, url: String) {
+    val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    cb.setPrimaryClip(android.content.ClipData.newPlainText("Proxy", url))
+    Toast.makeText(context, context.getString(R.string.clients_not_found_copied), Toast.LENGTH_LONG).show()
+}
+
+private fun applyToTelegramPackages(context: Context, url: String) {
+    val tgUrl = toTgProxyUrl(url)
+    val availablePackages = findTelegramClients(context, tgUrl)
 
     if (availablePackages.isEmpty()) {
-        Toast.makeText(context, context.getString(R.string.clients_not_found), Toast.LENGTH_SHORT).show()
+        // Пакет не виден (например, Telegram в «Защищённой папке» или «Двойном
+        // мессенджере» Samsung) — пробуем открыть ссылку без указания пакета.
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(tgUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            copyLinkFallback(context, url)
+        }
         return
     }
 
     val targetedIntents = availablePackages.map { pkg ->
-        Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        Intent(Intent.ACTION_VIEW, Uri.parse(tgUrl)).apply {
             setPackage(pkg)
         }
     }
@@ -488,7 +531,16 @@ private fun applyToTelegramPackages(context: Context, url: String) {
         try {
             context.startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(context, context.getString(R.string.client_open_error), Toast.LENGTH_SHORT).show()
+            // Клиент не принял tg:// — пробуем обычную ссылку t.me.
+            try {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .setPackage(availablePackages.first())
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e2: Exception) {
+                copyLinkFallback(context, url)
+            }
         }
     } else {
         val chooserIntent = Intent.createChooser(targetedIntents.first(), context.getString(R.string.client_choose))

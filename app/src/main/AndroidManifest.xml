@@ -33,6 +33,15 @@
         <package android:name="ru.dahl.messenger" />
         <package android:name="com.scriptsaz.litegram" />
         <package android:name="org.thunderdog.challegram" />
+        <!-- Telegram с сайта telegram.org и бета-версия -->
+        <package android:name="org.telegram.messenger.web" />
+        <package android:name="org.telegram.messenger.beta" />
+        <!-- Любой клиент, который открывает ссылки tg:// (все форки Telegram),
+             находится сам — без жёсткого списка пакетов. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tg" />
+        </intent>
     </queries>
 
     <application
