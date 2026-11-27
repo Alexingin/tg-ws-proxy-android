@@ -130,6 +130,7 @@
     <string name="mode_packages">Apps</string>
     <string name="mode_link">Link</string>
     <string name="clients_not_found">No Telegram clients found</string>
+    <string name="clients_not_found_copied">No Telegram client found. The proxy link is copied — paste it into any Telegram chat (e.g. Saved Messages) and tap it.</string>
     <string name="client_open_error">Failed to open the client</string>
     <string name="client_choose">Choose a client</string>
     <string name="client_choose_error">Failed to choose a client</string>

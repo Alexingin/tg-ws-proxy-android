@@ -130,6 +130,7 @@
     <string name="mode_packages">Пакеты</string>
     <string name="mode_link">Ссылка</string>
     <string name="clients_not_found">Клиенты не найдены</string>
+    <string name="clients_not_found_copied">Telegram не найден. Ссылка на прокси скопирована — вставь её в любой чат Telegram (например, «Избранное») и нажми на неё.</string>
     <string name="client_open_error">Ошибка при открытии клиента</string>
     <string name="client_choose">Выберите клиент</string>
     <string name="client_choose_error">Ошибка при выборе клиента</string>
